@@ -1,6 +1,6 @@
 # Kepler
 
-Round and round we go!
+> Round and round we go!
 
 An experimental operating system, developed for fun by a depressed college student. Right now things are in very early stages, but it does boot!
 
