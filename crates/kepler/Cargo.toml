@@ -1,0 +1,24 @@
+[package]
+name = "kepler"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+acpi = "4.1.1"
+cache-padded = "1.2.0"
+entropy = { version = "0.1.0", path = "../entropy" }
+hal = { version = "0.1.0", path = "../hal" }
+holo = { version = "0.1.0", path = "../holo" }
+limine = "0.1.10"
+limine-protocol = "0.4.0"
+linked_list_allocator = "0.10.4"
+lock_api = "0.4.9"
+log = { version = "0.4.17", default-features = false }
+nvme = { version = "0.1.0", path = "../nvme" }
+pci = { version = "0.1.0", path = "../pci" }
+pic8259 = "0.10.2"
+rand_chacha = { version = "0.3.1", default-features = false }
+spin = "0.9.5"
+staticvec = { version = "0.11.9", default-features = false }
+uart_16550 = { version = "0.2.18", features = ["nightly"] }
+x86_64 = "0.14.10"

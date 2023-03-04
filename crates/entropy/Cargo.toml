@@ -1,0 +1,13 @@
+[package]
+name = "entropy"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+blake2 = { version = "0.10.6", default-features = false }
+rand_core = { version = "0.6.4", default-features = false }
+
+[dev-dependencies]
+rand_chacha = { version = "0.3", default-features = false }
