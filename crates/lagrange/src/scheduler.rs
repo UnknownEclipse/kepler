@@ -1,8 +1,8 @@
-use alloc::{boxed::Box, collections::VecDeque};
+use alloc::boxed::Box;
 use core::{mem, ptr::NonNull, sync::atomic::Ordering};
 
 use hal::{interrupts, task::context_switch};
-use skua::mpsc_queue::Link;
+use skua::mpsc_queue::{Link, MpscQueue};
 use spin::{mutex::SpinMutex, Lazy};
 
 use crate::task::{
@@ -33,9 +33,9 @@ impl Scheduler {
         g
     }
 
-    pub fn with_static_stub(_stub: &'static Stub) -> Self {
+    pub fn with_static_stub(stub: &'static Stub) -> Self {
         Self {
-            queue: TaskQueue::new(),
+            queue: TaskQueue::with_stub(stub),
             current: SpinMutex::new(base_task()),
         }
     }
@@ -101,24 +101,36 @@ impl Scheduler {
 
 #[derive(Debug)]
 struct TaskQueue {
-    inner: SpinMutex<VecDeque<RawTask>>,
+    mpsc_queue: MpscQueue<Header>,
+    lock: SpinMutex<()>,
 }
 
 impl TaskQueue {
-    pub fn new() -> Self {
+    pub fn with_stub(stub: &'static Stub) -> Self {
         Self {
-            inner: Default::default(),
+            mpsc_queue: MpscQueue::with_static_stub(&stub.link),
+            lock: SpinMutex::new(()),
         }
     }
 
     pub fn pop(&self) -> Option<RawTask> {
-        self.inner.lock().pop_front()
+        unsafe {
+            let _guard = self.lock.lock();
+
+            self.mpsc_queue
+                .pop_unsync()
+                .map(|raw| RawTask::from_raw(raw))
+        }
     }
 
     pub fn push(&self, task: RawTask) {
-        self.inner.lock().push_back(task);
+        let raw = task.into_raw();
+        unsafe { self.mpsc_queue.push(raw) };
     }
 }
+
+unsafe impl Sync for TaskQueue {}
+unsafe impl Send for TaskQueue {}
 
 #[derive(Debug)]
 pub struct Stub {
