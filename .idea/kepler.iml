@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<module type="CPP_MODULE" version="4">
+  <component name="NewModuleRootManager">
+    <content url="file://$MODULE_DIR$">
+      <sourceFolder url="file://$MODULE_DIR$/crates/entropy/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/hal-core/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/hal-x86_64/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/hal/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/holo/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/kepler/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/lagrange/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/nvme/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/pci-types/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/pci-x86/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/pci/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/skua/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/vm-types/src" isTestSource="false" />
+      <excludeFolder url="file://$MODULE_DIR$/target" />
+    </content>
+    <orderEntry type="inheritedJdk" />
+    <orderEntry type="sourceFolder" forTests="false" />
+  </component>
+</module>
