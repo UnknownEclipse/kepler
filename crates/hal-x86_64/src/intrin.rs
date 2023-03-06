@@ -2,12 +2,9 @@
 
 #![allow(clippy::missing_safety_doc)]
 
-use core::{
-    arch::{
-        asm,
-        x86_64::{_rdrand16_step, _rdrand32_step, _rdrand64_step},
-    },
-    mem,
+use core::arch::{
+    asm,
+    x86_64::{_rdrand16_step, _rdrand32_step, _rdrand64_step},
 };
 
 use x86_64::{
@@ -16,10 +13,8 @@ use x86_64::{
         interrupts::{self, int3},
         port::Port,
     },
-    registers::rflags,
+    registers::{model_specific::Msr, rflags},
 };
-
-use crate::addr::VirtAddr;
 
 /// # Safety
 /// This is an intrinsic
@@ -156,4 +151,10 @@ pub unsafe fn lgdt<T>(ptr: *const T, entries: usize) {
     };
 
     asm!("lgdt [{}]", in(reg) idt, options(readonly, nostack, preserves_flags));
+}
+
+#[inline]
+pub unsafe fn hw_thread_id() -> u32 {
+    const IA32_TSC_AUX: u32 = 0xc0000103;
+    Msr::new(IA32_TSC_AUX).read() as u32
 }
