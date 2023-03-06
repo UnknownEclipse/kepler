@@ -5,7 +5,8 @@
     trait_alias,
     abi_x86_interrupt,
     sync_unsafe_cell,
-    const_try
+    const_try,
+    naked_functions
 )]
 
 pub mod addr;
