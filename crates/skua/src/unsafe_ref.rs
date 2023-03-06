@@ -47,3 +47,6 @@ impl<T> Clone for UnsafeRef<T> {
 }
 
 impl<T> Copy for UnsafeRef<T> {}
+
+unsafe impl<T> Send for UnsafeRef<T> where T: Sync + Send {}
+unsafe impl<T> Sync for UnsafeRef<T> where T: Sync {}

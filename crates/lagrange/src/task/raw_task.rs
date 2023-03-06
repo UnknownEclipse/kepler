@@ -1,9 +1,20 @@
-use core::{mem::ManuallyDrop, num::NonZeroU64, ptr::NonNull};
+use core::{
+    fmt::Debug,
+    mem::{ManuallyDrop, MaybeUninit},
+    num::NonZeroU64,
+    ptr::{self, NonNull},
+    sync::atomic::Ordering,
+    task::Waker,
+};
 
-use super::header::{Header, TaskVTable};
+use super::{
+    header::{Header, TaskVTable},
+    waker::waker_from_raw_task,
+};
 use crate::scheduler::Scheduler;
 
-#[derive(Debug)]
+const MAX_REFCOUNT: usize = isize::MAX as usize;
+
 pub struct RawTask(NonNull<Header>);
 
 impl RawTask {
@@ -12,28 +23,29 @@ impl RawTask {
     }
 
     pub fn id(&self) -> NonZeroU64 {
-        todo!()
+        self.header().id
     }
 
-    pub unsafe fn from_raw(raw: NonNull<()>) -> Self {
-        Self(raw.cast())
+    pub unsafe fn from_raw(raw: NonNull<Header>) -> Self {
+        Self(raw)
     }
 
-    pub fn into_raw(self) -> NonNull<()> {
-        ManuallyDrop::new(self).0.cast()
+    pub fn into_raw(self) -> NonNull<Header> {
+        ManuallyDrop::new(self).0
     }
 
-    fn value_ptr(&self) -> NonNull<()> {
-        let ptr: *mut u8 = self.0.as_ptr().cast();
-        let offset = self.vtable().value_offset;
-        unsafe { NonNull::new_unchecked(ptr.add(offset).cast()) }
+    pub unsafe fn take_value<T>(&self) -> Option<T> {
+        if self.header().done.load(Ordering::Acquire) {
+            let f = self.vtable().read_value_into;
+            let mut buf = MaybeUninit::<T>::uninit();
+            (f)(self.0, buf.as_mut_ptr().cast());
+            Some(buf.assume_init())
+        } else {
+            None
+        }
     }
 
-    pub unsafe fn take_value<T>(&self) -> T {
-        todo!()
-    }
-
-    fn header(&self) -> &Header {
+    pub fn header(&self) -> &Header {
         unsafe { self.0.as_ref() }
     }
 
@@ -42,29 +54,75 @@ impl RawTask {
     }
 
     pub fn name(&self) -> Option<&str> {
-        None
+        self.header().name
     }
 
     pub fn schedule(self) {
-        let s: *const Scheduler = self.scheduler();
-        unsafe {
-            (*s).schedule(self);
+        if let Some(s) = self.scheduler() {
+            s.schedule(self);
         }
     }
 
-    pub fn scheduler(&self) -> &Scheduler {
-        todo!()
+    pub fn scheduler(&self) -> Option<&'static Scheduler> {
+        self.header().scheduler.get()
+    }
+
+    /// Mark this task as scheduled, returning false if it is already scheduled elsewhere.
+    pub fn set_scheduled(&self) -> bool {
+        !self
+            .header()
+            .is_currently_scheduled
+            .swap(true, Ordering::AcqRel)
+    }
+
+    pub fn mark_not_scheduled(&self) {
+        self.header()
+            .is_currently_scheduled
+            .store(false, Ordering::Release);
+    }
+
+    pub fn into_waker(self) -> Waker {
+        waker_from_raw_task(self)
     }
 }
 
+unsafe impl Send for RawTask {}
+unsafe impl Sync for RawTask {}
+
 impl Clone for RawTask {
     fn clone(&self) -> Self {
-        Self(self.0.clone())
+        unsafe {
+            let nrefs = self.0.as_ref().refs.fetch_add(1, Ordering::Relaxed);
+            if MAX_REFCOUNT < nrefs {
+                panic!("refcount overflow");
+            }
+        }
+        Self(self.0)
     }
 }
 
 impl Drop for RawTask {
     fn drop(&mut self) {
-        todo!()
+        unsafe {
+            let nrefs = self.0.as_ref().refs.fetch_sub(1, Ordering::Relaxed);
+            if 1 < nrefs {
+                return;
+            }
+
+            let vtable = self.vtable();
+            (vtable.drop_in_place)(self.0);
+            (vtable.deallocate)(self.0.as_ptr().cast());
+        }
+    }
+}
+
+impl Debug for RawTask {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let mut s = f.debug_struct("RawTask");
+        s.field("id", &self.id());
+        if let Some(name) = self.name() {
+            s.field("name", &name);
+        }
+        s.finish_non_exhaustive()
     }
 }

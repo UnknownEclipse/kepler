@@ -9,6 +9,13 @@ pub struct JoinHandle<T> {
 }
 
 impl<T> JoinHandle<T> {
+    pub(crate) unsafe fn from_raw(raw: RawTask) -> Self {
+        JoinHandle {
+            raw,
+            _p: PhantomData,
+        }
+    }
+
     pub fn join(self) -> T {
         todo!("wait");
     }

@@ -1,23 +1,54 @@
 use core::{
+    cell::Cell,
     fmt::Debug,
-    ptr::NonNull,
-    sync::atomic::{AtomicU32, AtomicUsize, Ordering},
+    num::NonZeroU64,
+    ptr::{self, NonNull},
+    sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, AtomicUsize, Ordering},
 };
 
-use skua::mpsc_queue;
+use hal::task::Context;
+use skua::{mpsc_queue, Node};
 
+use crate::scheduler::Scheduler;
+
+#[repr(C)]
 #[derive(Debug)]
 pub struct Header {
-    pub(super) mpsc_link: mpsc_queue::Link,
-    pub(super) vtable: &'static TaskVTable,
-    pub(super) state: State,
-    pub(super) refs: AtomicUsize,
+    pub mpsc_link: mpsc_queue::Link,
+    pub vtable: &'static TaskVTable,
+    pub refs: AtomicUsize,
+    pub is_currently_scheduled: AtomicBool,
+    pub done: AtomicBool,
+    pub context: AtomicPtr<Context>,
+    pub scheduler: Cell<Option<&'static Scheduler>>,
+    pub name: Option<&'static str>,
+    pub id: NonZeroU64,
 }
 
 impl Header {
-    // pub const fn new() -> Self {
-    //     Self { mpsc_link: mpsc_queue::Link::new(), vtable: (), state: () }
-    // }
+    pub fn new(vtable: &'static TaskVTable) -> Self {
+        Self {
+            mpsc_link: mpsc_queue::Link::new(),
+            vtable,
+            refs: AtomicUsize::new(1),
+            is_currently_scheduled: AtomicBool::new(false),
+            done: AtomicBool::new(false),
+            context: AtomicPtr::new(ptr::null_mut()),
+            scheduler: Cell::new(None),
+            name: None,
+            id: new_id(),
+        }
+    }
+}
+
+impl Node<mpsc_queue::Link> for Header {
+    unsafe fn to_link(node: NonNull<Self>) -> NonNull<mpsc_queue::Link> {
+        node.cast()
+    }
+
+    unsafe fn from_link(link: NonNull<mpsc_queue::Link>) -> NonNull<Self> {
+        link.cast()
+    }
 }
 
 #[derive(Debug)]
@@ -41,14 +72,19 @@ impl State {
     }
 }
 
-pub(super) struct TaskVTable {
-    pub drop: unsafe fn(NonNull<Header>),
-    pub value_offset: usize,
-    pub trailer_offset: usize,
+pub struct TaskVTable {
+    pub drop_in_place: unsafe fn(NonNull<Header>),
+    pub deallocate: unsafe fn(*mut u8),
+    pub read_value_into: unsafe fn(NonNull<Header>, *mut u8),
 }
 
 impl Debug for TaskVTable {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("TaskVTable").finish_non_exhaustive()
     }
+}
+
+pub fn new_id() -> NonZeroU64 {
+    static COUNTER: AtomicU64 = AtomicU64::new(1);
+    NonZeroU64::new(COUNTER.fetch_add(1, Ordering::Relaxed)).unwrap()
 }

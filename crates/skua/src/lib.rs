@@ -3,6 +3,7 @@
 
 use core::ptr::NonNull;
 
+pub mod linked_list;
 pub mod mpsc_queue;
 pub mod unsafe_ref;
 

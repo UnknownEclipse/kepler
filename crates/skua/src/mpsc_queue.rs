@@ -18,6 +18,10 @@ impl Link {
             next: AtomicPtr::new(ptr::null_mut()),
         }
     }
+
+    pub fn in_use(&self) -> bool {
+        self.next.load(Ordering::Acquire).is_null()
+    }
 }
 
 #[derive(Debug)]
@@ -51,6 +55,10 @@ where
 
     pub unsafe fn pop_unsync(&self) -> Option<NonNull<T>> {
         unsafe { self.inner.pop().map(|link| T::from_link(link)) }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.inner.is_empty()
     }
 }
 
@@ -110,7 +118,19 @@ impl UnsafeMpscQueue {
         }
         None
     }
+
+    pub fn is_empty(&self) -> bool {
+        unsafe {
+            let tail = self.tail.load(Ordering::Relaxed);
+            let next = (*tail).next.load(Ordering::Acquire);
+
+            tail == self.stub.as_ptr() && next.is_null()
+        }
+    }
 }
+
+unsafe impl Send for UnsafeMpscQueue {}
+unsafe impl Sync for UnsafeMpscQueue {}
 
 impl Debug for UnsafeMpscQueue {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
