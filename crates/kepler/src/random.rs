@@ -1,9 +1,11 @@
+use ahash::random_state::set_random_source;
 use entropy::{Blake2bPool, Pool};
+use hal::interrupts;
 use rand_chacha::{
     rand_core::{self, RngCore},
     ChaCha20Rng,
 };
-use spin::Lazy;
+use spin::{mutex::SpinMutex, Lazy};
 
 use crate::irq_mutex::SpinIrqMutex;
 
@@ -45,4 +47,21 @@ impl rand_core::CryptoRng for CryptoRng {}
 #[inline]
 pub fn getrandom(buf: &mut [u8]) {
     crypto_rng().fill_bytes(buf);
+}
+
+#[derive(Debug)]
+struct AHashRandomSource {
+    rng: SpinMutex<CryptoRng>,
+}
+
+impl ahash::random_state::RandomSource for AHashRandomSource {
+    fn gen_hasher_seed(&self) -> usize {
+        interrupts::without(|_| self.rng.lock().next_u64() as usize)
+    }
+}
+
+pub fn init_ahash() {
+    let rng = SpinMutex::new(crypto_rng());
+    let source = AHashRandomSource { rng };
+    set_random_source(source).expect("failed to set random source");
 }

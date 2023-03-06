@@ -13,36 +13,35 @@ extern crate alloc;
 
 use alloc::string::String;
 use core::{
-    arch::global_asm,
-    mem,
     panic::PanicInfo,
     ptr,
     sync::atomic::{AtomicPtr, Ordering},
 };
 
 use hal::{
-    intrin::{breakpoint, halt},
+    intrin::halt,
     task::{context_switch, Context},
 };
+use lagrange::thread;
 use limine::{
     LimineEfiSystemTableRequest, LimineHhdmRequest, LimineMemmapRequest, LimineMemoryMapEntryType,
     LimineRsdpRequest,
 };
-use linked_list_allocator::LockedHeap;
-use nvme::controller_attributes::ControllerAttributes;
 use pci::types::{ClassId, SubclassId};
-use x86_64::{
-    registers::control::Cr3,
-    structures::paging::{Mapper, OffsetPageTable, PhysFrame},
+use tracing::{info_span, subscriber::set_global_default};
+use x86_64::{registers::control::Cr3, structures::paging::OffsetPageTable};
+
+use crate::{
+    stdout::{init_logger, serial},
+    subscriber::KernelSubscriber,
 };
 
-use crate::stdout::{init_logger, serial};
-
-mod executor;
+mod allocator;
 mod idt;
 mod irq_mutex;
 mod random;
 mod stdout;
+mod subscriber;
 mod task;
 mod vm;
 
@@ -51,11 +50,20 @@ static SYSTEM_TABLE: LimineEfiSystemTableRequest = LimineEfiSystemTableRequest::
 static RSDP: LimineRsdpRequest = LimineRsdpRequest::new(0);
 static HHDM: LimineHhdmRequest = LimineHhdmRequest::new(0);
 
-#[global_allocator]
-static HEAP: LockedHeap = LockedHeap::empty();
+// #[global_allocator]
+// static HEAP: LockedHeap = LockedHeap::empty();
 
 #[no_mangle]
 extern "C" fn _start() -> ! {
+    let subscriber = KernelSubscriber::new();
+    set_global_default(subscriber).unwrap();
+
+    {
+        let span = info_span!("span");
+        let _guard = span.enter();
+        tracing::info!("Hello from tracing!");
+    }
+
     init_logger().expect("log init failed");
     log::set_max_level(log::LevelFilter::Trace);
 
@@ -86,12 +94,9 @@ extern "C" fn _start() -> ! {
         });
 
     vm::init(entries);
+    allocator::init();
 
-    {
-        let heap_region = vm::alloc_pages(64).unwrap();
-        let mut heap = HEAP.lock();
-        unsafe { heap.init(heap_region.as_mut_ptr(), heap_region.len()) };
-    }
+    tracing::info!("tracing initialized");
 
     let s = String::from("Hi!");
     log::info!("allocated string: {}", s);
@@ -123,17 +128,46 @@ extern "C" fn _start() -> ! {
 
     log::info!("DONE!");
 
-    let mut state = ThreadState {
-        boot_thread_ctx: ptr::null_mut(),
-    };
-    CURRENT_THREAD.store(&mut state, Ordering::Relaxed);
+    thread::yield_now();
+    log::info!("yielded");
 
-    unsafe { start_thread(ptr::null_mut(), start_handler, &mut state.boot_thread_ctx) };
+    let t0 = lagrange::thread::spawn(|| {
+        log::info!("thread #0 started!");
+        thread::yield_now();
+        log::info!("thread #0 finished");
+    });
+    let t1 = lagrange::thread::spawn(|| {
+        log::info!("thread #1 started!");
+        thread::yield_now();
+        log::info!("thread #1 finished");
+    });
+    let t2 = lagrange::thread::spawn(|| {
+        log::info!("thread #2 started!");
+        thread::yield_now();
+        log::info!("thread #2 finished");
+    });
 
-    log::info!("hello from thread <boot>");
+    log::info!("hello from <boot> #0");
+
+    thread::yield_now();
+
+    log::info!("hello from <boot> #1");
+    log::info!("hello from <boot> #2");
+    // let mut state = ThreadState {
+    //     boot_thread_ctx: ptr::null_mut(),
+    // };
+    // CURRENT_THREAD.store(&mut state, Ordering::Relaxed);
+
+    // let data_ptr: *mut _ = &mut state;
+    // unsafe { start_thread(data_ptr.cast(), start_handler, &mut state.boot_thread_ctx) };
+
+    // log::info!("hello from thread <boot>");
 
     loop {
-        unsafe { halt() };
+        unsafe {
+            halt();
+        }
+        thread::yield_now();
     }
 }
 
@@ -145,32 +179,14 @@ fn panic(info: &PanicInfo) -> ! {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-struct AcpiHandler;
-
-impl acpi::AcpiHandler for AcpiHandler {
-    unsafe fn map_physical_region<T>(
-        &self,
-        physical_address: usize,
-        size: usize,
-    ) -> acpi::PhysicalMapping<Self, T> {
-        // for page in
-        let vm = holo::Global;
-        todo!()
-    }
-
-    fn unmap_physical_region<T>(region: &acpi::PhysicalMapping<Self, T>) {
-        todo!()
-    }
-}
-
-extern "C" fn start_handler() -> ! {
-    let data = CURRENT_THREAD.load(Ordering::Relaxed);
+extern "C" fn start_handler(ptr: *mut ()) -> ! {
+    let data: *mut ThreadState = ptr.cast();
 
     log::info!("hello from thread <main>");
 
     let mut saved = ptr::null_mut();
     unsafe { context_switch(&mut saved, (*data).boot_thread_ctx) };
+
     loop {
         unsafe { halt() }
     }
@@ -182,21 +198,21 @@ struct ThreadState {
 
 static CURRENT_THREAD: AtomicPtr<ThreadState> = AtomicPtr::new(ptr::null_mut());
 
-unsafe fn start_thread(data: *mut u8, f: extern "C" fn() -> !, saved_state: *mut *mut Context) {
+unsafe fn start_thread(
+    data: *mut (),
+    f: extern "C" fn(*mut ()) -> !,
+    saved_state: *mut *mut Context,
+) {
     let stack_slice = vm::alloc_pages(128).unwrap();
     let stack = stack_slice.as_ptr() as *mut u8;
     let top = stack.add(stack_slice.len());
     let sp: *mut Context = top.cast();
     let sp = sp.sub(1);
 
-    let initial_context = Context::with_target(f);
+    let initial_context = Context::with_initial(f, data);
     sp.write(initial_context);
 
     // let rip = rip.cast();
     // ptr::write(rip, initial_context);
     unsafe { context_switch(saved_state, sp) };
-}
-
-struct Thread {
-    context: *mut Context,
 }
