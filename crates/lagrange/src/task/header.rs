@@ -1,3 +1,4 @@
+use alloc::{borrow::Cow, boxed::Box};
 use core::{
     cell::Cell,
     fmt::Debug,
@@ -9,7 +10,7 @@ use core::{
 use hal::task::Context;
 use skua::{mpsc_queue, Node};
 
-use crate::scheduler::Scheduler;
+use crate::{scheduler::Scheduler, sync::event::OneShotEvent};
 
 #[repr(C)]
 #[derive(Debug)]
@@ -18,11 +19,12 @@ pub struct Header {
     pub vtable: &'static TaskVTable,
     pub refs: AtomicUsize,
     pub is_currently_scheduled: AtomicBool,
-    pub done: AtomicBool,
+    pub finished: OneShotEvent,
     pub context: AtomicPtr<Context>,
     pub scheduler: Cell<Option<&'static Scheduler>>,
-    pub name: Option<&'static str>,
+    pub name: Option<Cow<'static, str>>,
     pub id: NonZeroU64,
+    pub interrupts_enabled: AtomicBool,
 }
 
 impl Header {
@@ -32,11 +34,12 @@ impl Header {
             vtable,
             refs: AtomicUsize::new(1),
             is_currently_scheduled: AtomicBool::new(false),
-            done: AtomicBool::new(false),
+            finished: OneShotEvent::new(),
             context: AtomicPtr::new(ptr::null_mut()),
             scheduler: Cell::new(None),
             name: None,
             id: new_id(),
+            interrupts_enabled: AtomicBool::new(true),
         }
     }
 }

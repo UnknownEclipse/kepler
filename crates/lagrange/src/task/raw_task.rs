@@ -2,7 +2,7 @@ use core::{
     fmt::Debug,
     mem::{ManuallyDrop, MaybeUninit},
     num::NonZeroU64,
-    ptr::{self, NonNull},
+    ptr::NonNull,
     sync::atomic::Ordering,
     task::Waker,
 };
@@ -19,7 +19,10 @@ pub struct RawTask(NonNull<Header>);
 
 impl RawTask {
     pub unsafe fn detach(&self) {
-        todo!()
+        // TODO: Proper detachment support
+        //       I actually don't know what this would imply. We could avoid writing
+        //       the return value, but I doubt that would have a significant performance
+        //       impact.
     }
 
     pub fn id(&self) -> NonZeroU64 {
@@ -35,7 +38,7 @@ impl RawTask {
     }
 
     pub unsafe fn take_value<T>(&self) -> Option<T> {
-        if self.header().done.load(Ordering::Acquire) {
+        if self.header().finished.is_set() {
             let f = self.vtable().read_value_into;
             let mut buf = MaybeUninit::<T>::uninit();
             (f)(self.0, buf.as_mut_ptr().cast());
@@ -54,7 +57,7 @@ impl RawTask {
     }
 
     pub fn name(&self) -> Option<&str> {
-        self.header().name
+        self.header().name.as_deref()
     }
 
     pub fn schedule(self) {
@@ -105,7 +108,7 @@ impl Drop for RawTask {
     fn drop(&mut self) {
         unsafe {
             let nrefs = self.0.as_ref().refs.fetch_sub(1, Ordering::Relaxed);
-            if 1 < nrefs {
+            if 1 != nrefs {
                 return;
             }
 

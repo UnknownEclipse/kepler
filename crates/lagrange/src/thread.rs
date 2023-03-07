@@ -1,4 +1,4 @@
-use alloc::{alloc::dealloc, boxed::Box};
+use alloc::{alloc::dealloc, borrow::Cow, boxed::Box};
 use core::{
     alloc::Layout,
     cell::{Cell, UnsafeCell},
@@ -9,10 +9,10 @@ use core::{
     task::Waker,
 };
 
-use hal::{intrin::halt, task::Context};
+use hal::task::Context;
 
 use crate::{
-    scheduler::Scheduler,
+    scheduler::global,
     task::{
         header::{Header, TaskVTable},
         raw_task::RawTask,
@@ -20,66 +20,113 @@ use crate::{
     },
 };
 
+#[inline]
 pub fn spawn<F, R>(f: F) -> JoinHandle<R>
 where
-    F: Send + FnOnce() -> R,
-    R: Send,
+    F: 'static + Send + FnOnce() -> R,
+    R: 'static + Send,
 {
-    let task = allocate_task(f);
-    let join_handle = unsafe { JoinHandle::from_raw(task.clone()) };
-    Scheduler::global().schedule(task);
-    join_handle
+    Builder::new().spawn(f)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ThreadId(NonZeroU64);
 
-#[derive(Debug, Clone)]
-pub struct Thread {
-    task: RawTask,
+#[derive(Debug)]
+pub struct Builder {
+    stack_size: usize,
+    name: Option<&'static str>,
 }
+
+impl Builder {
+    pub fn new() -> Self {
+        Self {
+            stack_size: 8192,
+            name: None,
+        }
+    }
+
+    pub fn stack_size(&mut self, stack_size: usize) -> &mut Self {
+        self.stack_size = stack_size;
+        self
+    }
+
+    pub fn name(&mut self, name: &'static str) -> &mut Self {
+        self.name = Some(name);
+        self
+    }
+
+    pub fn spawn<F, T>(self, f: F) -> JoinHandle<T>
+    where
+        F: 'static + Send + FnOnce() -> T,
+        T: 'static + Send,
+    {
+        let task = allocate_task(f, self);
+        let join_handle = unsafe { JoinHandle::from_raw(task.clone()) };
+        global().schedule(task);
+        join_handle
+    }
+}
+
+impl Default for Builder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Thread(pub(crate) RawTask);
 
 impl Thread {
     pub fn unpark(self) {
-        self.task.schedule();
+        self.0.schedule();
     }
 
     pub fn name(&self) -> Option<&str> {
-        self.task.name()
+        self.0.name()
     }
 
     pub fn id(&self) -> ThreadId {
-        ThreadId(self.task.id())
+        ThreadId(self.0.id())
     }
 
     pub fn into_waker(self) -> Waker {
-        self.task.into_waker()
+        self.0.into_waker()
     }
 }
 
 pub fn current() -> Thread {
-    let task = Scheduler::global().current();
-    Thread { task }
+    let task = global().current();
+    Thread(task)
 }
 
+#[inline]
 pub fn park() {
-    Scheduler::global().redispatch();
+    global().park();
+}
+
+#[inline]
+pub fn park_if<F>(f: F)
+where
+    F: FnOnce() -> bool,
+{
+    let mut f = Some(f);
+    global().park_if(&mut || unsafe { (f.take().unwrap_unchecked())() });
 }
 
 pub fn yield_now() {
-    let s = Scheduler::global();
-    s.yield_now();
+    global().yield_now();
 }
 
-fn allocate_task<F, R>(f: F) -> RawTask
+fn allocate_task<F, R>(f: F, builder: Builder) -> RawTask
 where
     F: FnOnce() -> R + Send,
     R: Send,
 {
-    let stack = Box::new_uninit_slice(16384);
+    let stack = Box::new_uninit_slice(builder.stack_size);
     let stack = wrap_slice_box(stack);
 
-    let full: FullTaskState<F, R> = FullTaskState {
+    let mut full: FullTaskState<F, R> = FullTaskState {
         header: Header::new(&FullTaskState::<F, R>::VTABLE),
         func: Cell::new(Some(f)),
         return_value: Cell::new(None),
@@ -87,6 +134,7 @@ where
     };
 
     full.header.refs.store(2, Ordering::Relaxed);
+    full.header.name = builder.name.map(Cow::Borrowed);
 
     let full = Box::new(full);
 
@@ -162,12 +210,9 @@ where
     let f = full.func.take().unwrap();
     let result = f();
     full.return_value.set(Some(result));
-    full.header.done.store(true, Ordering::Relaxed);
+    full.header.finished.notify();
 
     mem::drop(task);
-    Scheduler::global().redispatch();
-
-    loop {
-        unsafe { halt() }
-    }
+    park();
+    unreachable!("thread continued after execution completed");
 }

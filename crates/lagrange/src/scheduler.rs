@@ -1,7 +1,10 @@
-use alloc::boxed::Box;
+use alloc::{borrow::Cow, boxed::Box};
 use core::{mem, ptr::NonNull, sync::atomic::Ordering};
 
-use hal::{interrupts, task::context_switch};
+use hal::{
+    interrupts,
+    task::{context_switch, context_switch_and_enable_interrupts},
+};
 use skua::mpsc_queue::{Link, MpscQueue};
 use spin::{mutex::SpinMutex, Lazy};
 
@@ -13,6 +16,9 @@ use crate::task::{
 static STUB: Stub = Stub::new();
 static GLOBAL: Lazy<Scheduler> = Lazy::new(|| Scheduler::with_static_stub(&STUB));
 
+pub fn global() -> &'static Scheduler {
+    &GLOBAL
+}
 /// The global task scheduler.
 ///
 /// ## Implementation Notes
@@ -42,37 +48,36 @@ impl Scheduler {
 
     pub fn schedule(&self, task: RawTask) {
         task.header().scheduler.set(Some(&GLOBAL));
-
-        interrupts::without(|_| {
-            if !task.set_scheduled() {
-                return;
-            }
-            self.queue.push(task);
-        });
+        if !task.set_scheduled() {
+            return;
+        }
+        self.queue.push(task);
     }
 
-    pub fn redispatch(&self) {
+    pub fn redispatch(&self, interrupts_were_enabled: bool) {
+        debug_assert!(!interrupts::are_enabled());
+
         if let Some(task) = self.pop_task() {
             unsafe {
-                self.switch_to(task);
+                self.switch_to(task, interrupts_were_enabled);
             }
         }
     }
 
     fn pop_task(&self) -> Option<RawTask> {
-        interrupts::without(|_| {
-            let task = self.queue.pop()?;
-            task.mark_not_scheduled();
-            Some(task)
-        })
+        let task = self.queue.pop()?;
+        task.mark_not_scheduled();
+        Some(task)
     }
 
-    unsafe fn switch_to(&self, task: RawTask) {
-        interrupts::without(|_| {
-            let cur = mem::replace(&mut *self.current.lock(), task.clone());
+    unsafe fn switch_to(&self, task: RawTask, interrupts_were_enabled: bool) {
+        debug_assert!(!interrupts::are_enabled());
 
-            switch_tasks(&cur, &task);
-        });
+        let cur = mem::replace(&mut *self.current.lock(), task.clone());
+        cur.header()
+            .interrupts_enabled
+            .store(interrupts_were_enabled, Ordering::Release);
+        switch_tasks(&cur, &task);
         // let mut saved_context = ptr::null_mut();
         // unsafe { context_switch(&mut saved_context, task.header()) }
     }
@@ -81,21 +86,47 @@ impl Scheduler {
         self.current.lock().clone()
     }
 
-    pub fn yield_to(&self, other: &RawTask) {
-        interrupts::without(|_| {
-            let cur = self.current();
-            self.schedule(cur.clone());
-            unsafe { switch_tasks(&cur, other) };
-        });
+    // pub fn yield_to(&self, other: &RawTask) {
+    //     interrupts::without(|_| {
+    //         let cur = self.current();
+    //         self.schedule(cur.clone());
+    //         unsafe { switch_tasks(&cur, other) };
+    //     });
+    // }
+
+    pub fn park(&self) {
+        self.park_if(&mut || true);
+    }
+
+    pub fn park_if(&self, f: &mut dyn FnMut() -> bool) -> bool {
+        unsafe {
+            let were_enabled = interrupts::are_enabled();
+            if were_enabled {
+                interrupts::disable()
+            }
+            if f() {
+                self.redispatch(were_enabled);
+                return true;
+            } else if were_enabled {
+                interrupts::enable();
+            }
+            false
+        }
     }
 
     pub fn yield_now(&self) {
-        interrupts::without(|_| {
+        unsafe {
+            let were_enabled = interrupts::are_enabled();
+            if were_enabled {
+                interrupts::disable()
+            }
             if let Some(new) = self.pop_task() {
                 self.schedule(self.current());
-                unsafe { self.switch_to(new) };
+                self.switch_to(new, were_enabled);
+            } else if were_enabled {
+                interrupts::enable();
             }
-        });
+        }
     }
 }
 
@@ -144,15 +175,22 @@ impl Stub {
 }
 
 unsafe fn switch_tasks(old: &RawTask, new: &RawTask) {
-    context_switch(
-        old.header().context.as_mut_ptr(),
-        new.header().context.load(Ordering::Relaxed),
-    );
+    debug_assert!(!interrupts::are_enabled());
+
+    let reenable_interrupts = new.header().interrupts_enabled.load(Ordering::Acquire);
+    let old = old.header().context.as_mut_ptr();
+    let new = new.header().context.load(Ordering::Acquire);
+
+    if reenable_interrupts {
+        context_switch_and_enable_interrupts(old, new);
+    } else {
+        context_switch(old, new);
+    }
 }
 
 fn base_task() -> RawTask {
     let mut header = Box::new(Header::new(&BASE_VTABLE));
-    header.name = Some("<main>");
+    header.name = Some(Cow::Borrowed("<main>"));
     let raw = NonNull::new(Box::into_raw(header)).unwrap();
     unsafe { RawTask::from_raw(raw.cast()) }
 }
