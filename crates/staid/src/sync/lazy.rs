@@ -1,28 +1,29 @@
 use core::{
     cell::Cell,
-    fmt,
     ops::{Deref, DerefMut},
 };
 
-use crate::OnceCell;
+use super::OnceCell;
 
 pub struct Lazy<T, F = fn() -> T> {
-    cell: OnceCell<T>,
+    value: OnceCell<T>,
     init: Cell<Option<F>>,
 }
 
 impl<T, F> Lazy<T, F> {
     pub const fn new(init: F) -> Self {
         Self {
-            cell: OnceCell::new(),
+            value: OnceCell::new(),
             init: Cell::new(Some(init)),
         }
     }
 
-    pub fn into_value(this: Self) -> Result<T, F> {
-        this.cell
-            .into_inner()
-            .ok_or_else(|| this.init.into_inner().expect("invalid lazy state"))
+    pub fn get(this: &Self) -> Option<&T> {
+        this.value.get()
+    }
+
+    pub fn get_mut(this: &mut Self) -> Option<&mut T> {
+        this.value.get_mut()
     }
 }
 
@@ -31,24 +32,23 @@ where
     F: FnOnce() -> T,
 {
     pub fn force(this: &Self) -> &T {
-        this.cell.get_or_init(|| {
-            let init = this.init.take().unwrap();
-            init()
+        this.value.get_or_init(|| {
+            let f = unsafe { this.init.take().unwrap_unchecked() };
+            f()
         })
     }
 
     pub fn force_mut(this: &mut Self) -> &mut T {
         Self::force(this);
-        Self::get_mut(this).unwrap_or_else(|| unreachable!())
+        unsafe { Self::get_mut(this).unwrap_unchecked() }
     }
+}
 
-    pub fn get(this: &Self) -> Option<&T> {
-        this.cell.get()
-    }
-
-    pub fn get_mut(this: &mut Self) -> Option<&mut T> {
-        this.cell.get_mut()
-    }
+unsafe impl<T, F> Sync for Lazy<T, F>
+where
+    F: Send,
+    OnceCell<T>: Sync,
+{
 }
 
 impl<T, F> Deref for Lazy<T, F>
@@ -77,14 +77,5 @@ where
 {
     fn default() -> Self {
         Self::new(Default::default)
-    }
-}
-
-impl<T: fmt::Debug, F> fmt::Debug for Lazy<T, F> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("Lazy")
-            .field("cell", &self.cell)
-            .field("init", &"..")
-            .finish()
     }
 }

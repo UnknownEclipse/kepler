@@ -1,3 +1,5 @@
+use core::fmt::Pointer;
+
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct VirtAddr(*const ());
@@ -19,8 +21,8 @@ impl VirtAddr {
     }
 
     #[inline]
-    pub const fn as_ptr<T>(&self) -> *const T {
-        self.0.cast()
+    pub const fn as_ptr<T>(&self) -> *mut T {
+        self.0.cast_mut().cast()
     }
 
     #[inline]
@@ -41,7 +43,13 @@ impl VirtAddr {
     #[inline]
     pub fn is_aligned(&self, align: usize) -> bool {
         assert!(align.is_power_of_two());
-        self.as_usize() % align != 0
+        self.as_usize() % align == 0
+    }
+}
+
+impl Pointer for VirtAddr {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_tuple("VirtAddr").field(&self.0).finish()
     }
 }
 

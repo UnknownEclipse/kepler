@@ -10,6 +10,7 @@ cache-padded = "1.2.0"
 divvy = { version = "0.1.0", path = "../divvy" }
 entropy = { version = "0.1.0", path = "../entropy" }
 hal = { version = "0.1.0", path = "../hal" }
+hal2 = { version = "0.1.0", path = "../hal2" }
 holo = { version = "0.1.0", path = "../holo" }
 lagrange = { version = "0.1.0", path = "../lagrange" }
 limine = "0.1.10"

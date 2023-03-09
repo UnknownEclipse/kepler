@@ -1,3 +1,4 @@
+pub mod atomic_task;
 pub mod header;
 pub mod join_handle;
 pub mod raw_task;

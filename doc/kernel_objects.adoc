@@ -1,0 +1,65 @@
+= Kernel Objects
+
+[,c]
+----
+typedef sol_kern_t long;
+
+struct sol_kern_options {};
+
+enum sol_kern_op {
+    SOL_KERN_OP_NEW,
+    SOL_KERN_OP_DROP,
+};
+
+enum sol_kern_options {
+    int kind;
+    /* Object specific data */
+};
+
+sol_kern_t syscall(SOL_SYS_KERN_NEW, struct sol_kern_options *options);
+----
+
+Kepler uses kernel objects as handles to resources and capabilities in userspace. All
+objects take the base type of `sol_kern_t` in userspace code. In addition, kernel objects
+can be passed between processes (although other processes may not have permission
+to _use_ them).
+
+== Memory Objects
+
+[,c]
+----
+typedef sol_kern_t sol_mem_t;
+----
+
+Memory objects represent anything that can be mapped into memory. Such objects can be
+mapped into user memory by passing a handle to the `map` system call.
+
+=== Physical Memory Object
+
+[,c]
+----
+typedef sol_mem_t sol_phys_mem_t;
+----
+
+A physical memory object is exclusively managed by the kernel, and represents process
+exclusive access to a region of physical memory. This is useful when writing device
+drivers, and essentially nothing else. Attempting to create a physical memory object
+to a region already owned by another process or the kernel will result in an error.
+
+=== Shared Memory Object
+
+[,c]
+----
+typedef sol_mem_t sol_sh_mem_t;
+----
+
+A shared memory object is used for ipc purposes between processes and/or the kernel. It
+can be created with a set of restrictions for which processes can access the memory.
+
+== Other Objects
+
+=== I/O Port Object
+
+On x86 and amd64 platforms, drivers may need to interact directly with members of the 
+I/O address space. In kernels this is done via the `IN` and `OUT` instructions, but we
+need to be careful what is exposed to userspace.

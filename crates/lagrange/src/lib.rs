@@ -11,6 +11,7 @@
 
 extern crate alloc;
 
+pub mod futex;
 mod scheduler;
 pub mod sync;
 mod task;

@@ -106,6 +106,9 @@ impl<T> OnceCell<T> {
     }
 }
 
+unsafe impl<T> Sync for OnceCell<T> where T: Send + Sync {}
+unsafe impl<T> Send for OnceCell<T> where T: Send {}
+
 impl<T> Default for OnceCell<T> {
     fn default() -> Self {
         Self::new()

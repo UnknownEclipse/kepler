@@ -3,7 +3,9 @@
 
 pub use crate::{
     frame::Frame,
+    frame_allocator::{FrameAllocError, FrameAllocator},
     page::{Page, PageSize, Size4KiB},
+    page_table::{Caching, MapOptions, PageTable, PageTableError},
     phys_addr::PhysAddr,
     virt_addr::VirtAddr,
 };
@@ -22,5 +24,5 @@ fn align_down(addr: u64, align: u64) -> u64 {
 
 fn align_up(addr: u64, align: u64) -> u64 {
     assert!(align.is_power_of_two());
-    addr & !(align - 1)
+    ((addr + align - 1) / align) * align
 }

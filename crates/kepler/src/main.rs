@@ -12,21 +12,14 @@
 extern crate alloc;
 
 use alloc::string::String;
-use core::{
-    panic::PanicInfo,
-    ptr,
-    sync::atomic::{AtomicPtr, Ordering},
-};
+use core::{panic::PanicInfo, ptr, sync::atomic::AtomicPtr};
 
 use hal::{
     intrin::halt,
     task::{context_switch, Context},
 };
 use lagrange::thread;
-use limine::{
-    LimineEfiSystemTableRequest, LimineHhdmRequest, LimineMemmapRequest, LimineMemoryMapEntryType,
-    LimineRsdpRequest,
-};
+use limine::{LimineHhdmRequest, LimineMemmapRequest, LimineMemoryMapEntryType};
 use pci::types::{ClassId, SubclassId};
 use tracing::{info_span, subscriber::set_global_default};
 use x86_64::{registers::control::Cr3, structures::paging::OffsetPageTable};
@@ -42,12 +35,9 @@ mod irq_mutex;
 mod random;
 mod stdout;
 mod subscriber;
-mod task;
 mod vm;
 
 static MEMORY_MAP: LimineMemmapRequest = LimineMemmapRequest::new(0);
-static SYSTEM_TABLE: LimineEfiSystemTableRequest = LimineEfiSystemTableRequest::new(0);
-static RSDP: LimineRsdpRequest = LimineRsdpRequest::new(0);
 static HHDM: LimineHhdmRequest = LimineHhdmRequest::new(0);
 
 // #[global_allocator]
@@ -121,52 +111,30 @@ extern "C" fn _start() -> ! {
         let addr = (bar0 & 0xfffffff0) + ((bar1 & 0xffffffff) << 32);
 
         log::info!("{:#x?}", addr);
-
-        // let attrs = unsafe { &*((addr + 0x100) as usize as *mut ControllerAttributes) };
-        // log::info!("{:?}", attrs);
     }
 
     log::info!("DONE!");
 
-    thread::yield_now();
-    log::info!("yielded");
-
-    let t0 = lagrange::thread::spawn(|| {
-        log::info!("thread #0 started!");
-        thread::yield_now();
+    let t0 = thread::spawn(|| {
+        log::info!("thread #0 started");
+        for _ in 0..20 {
+            unsafe {
+                halt();
+            }
+        }
         log::info!("thread #0 finished");
-    });
-    let t1 = lagrange::thread::spawn(|| {
-        log::info!("thread #1 started!");
-        thread::yield_now();
-        log::info!("thread #1 finished");
-    });
-    let t2 = lagrange::thread::spawn(|| {
-        log::info!("thread #2 started!");
-        thread::yield_now();
-        log::info!("thread #2 finished");
+        String::from("Finished")
     });
 
-    log::info!("hello from <boot> #0");
-
+    log::info!("hi");
     thread::yield_now();
+    log::info!("bye");
 
-    log::info!("hello from <boot> #1");
-    log::info!("hello from <boot> #2");
-    // let mut state = ThreadState {
-    //     boot_thread_ctx: ptr::null_mut(),
-    // };
-    // CURRENT_THREAD.store(&mut state, Ordering::Relaxed);
-
-    // let data_ptr: *mut _ = &mut state;
-    // unsafe { start_thread(data_ptr.cast(), start_handler, &mut state.boot_thread_ctx) };
-
-    // log::info!("hello from thread <boot>");
+    assert_eq!(t0.join(), String::from("Finished"));
+    log::info!("bye 2");
 
     loop {
-        unsafe {
-            halt();
-        }
+        unsafe { halt() };
         thread::yield_now();
     }
 }

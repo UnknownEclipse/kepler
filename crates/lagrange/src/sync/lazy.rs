@@ -44,6 +44,13 @@ where
     }
 }
 
+unsafe impl<T, F> Sync for Lazy<T, F>
+where
+    F: Send,
+    OnceCell<T>: Sync,
+{
+}
+
 impl<T, F> Deref for Lazy<T, F>
 where
     F: FnOnce() -> T,

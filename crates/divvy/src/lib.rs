@@ -11,3 +11,4 @@
 pub mod bump;
 pub mod global;
 pub mod hybrid;
+pub mod nop;

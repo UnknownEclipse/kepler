@@ -1,4 +1,4 @@
-use core::{marker::PhantomData, sync::atomic::Ordering};
+use core::marker::PhantomData;
 
 use super::raw_task::RawTask;
 use crate::thread::Thread;

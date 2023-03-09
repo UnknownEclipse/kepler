@@ -130,6 +130,8 @@ impl RawList {
     }
 }
 
+unsafe impl Sync for RawList {}
+
 #[derive(Debug)]
 struct RawCursor<'a> {
     list: &'a mut RawList,

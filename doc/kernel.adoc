@@ -1,0 +1,9 @@
+= Kernel Design and Documentation
+
+This document describes the design of Kepler's kernel and structure. In keeping with
+the 'orbital mechanics' theme, the kernel is called `Sol`. Structures are described
+using simple C types and functions, as the focus is on the objects and functions 
+themselves. Safe APIs will be provided in the userspace runtime.
+
+== 
+kernel_objects.adoc[]

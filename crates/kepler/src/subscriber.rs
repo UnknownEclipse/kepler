@@ -1,5 +1,5 @@
 use alloc::{borrow::ToOwned, string::String, vec::Vec};
-use core::fmt::{self, Debug, Write};
+use core::fmt::{Debug, Write};
 
 use spin::mutex::SpinMutex;
 use tracing::{

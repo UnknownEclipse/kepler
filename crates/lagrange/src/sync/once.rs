@@ -26,11 +26,6 @@ pub struct Once {
     _marker: PhantomData<*mut Waiter>,
 }
 
-// Why do we need `T: Send`?
-// Thread A creates a `OnceCell` and shares it with
-// scoped thread B, which fills the cell, which is
-// then destroyed by A. That is, destructor observes
-// a sent value.
 unsafe impl Sync for Once {}
 unsafe impl Send for Once {}
 
