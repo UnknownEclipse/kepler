@@ -55,3 +55,9 @@ impl Pointer for VirtAddr {
 
 unsafe impl Send for VirtAddr {}
 unsafe impl Sync for VirtAddr {}
+
+impl Default for VirtAddr {
+    fn default() -> Self {
+        Self::zero()
+    }
+}

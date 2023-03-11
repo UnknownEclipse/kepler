@@ -1,0 +1,8 @@
+= Roadmap
+
+== First Targets
+
+Task system improvements::
+. `hal`: Add support for hardware threads
+. `kernel::task`: Implement scheduler work stealing
+. `kernel::task`: Use a better queue, consider adding priorities.

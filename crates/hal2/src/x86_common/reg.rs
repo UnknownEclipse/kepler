@@ -70,3 +70,14 @@ pub mod cr3 {
         asm!("mov cr3, {}", in(reg) value, options(nomem, nostack, preserves_flags));
     }
 }
+
+pub mod cs {
+    use core::arch::asm;
+
+    #[inline]
+    pub unsafe fn read() -> u16 {
+        let value: u16;
+        asm!("mov {0:x}, cs", out(reg) value, options(nomem, nostack, preserves_flags));
+        value
+    }
+}

@@ -8,6 +8,7 @@ pub use crate::{
     page_table::{Caching, MapOptions, PageTable, PageTableError},
     phys_addr::PhysAddr,
     virt_addr::VirtAddr,
+    virt_region::VirtRegion,
 };
 
 mod frame;
@@ -16,6 +17,7 @@ mod page;
 mod page_table;
 mod phys_addr;
 mod virt_addr;
+mod virt_region;
 
 fn align_down(addr: u64, align: u64) -> u64 {
     assert!(align.is_power_of_two());

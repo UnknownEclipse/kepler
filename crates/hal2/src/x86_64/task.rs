@@ -1,5 +1,7 @@
 use core::arch::asm;
 
+pub use crate::x86_common::task::*;
+
 #[naked]
 pub unsafe extern "C" fn context_switch(old: *mut *mut Context, new: *mut Context) {
     asm!(

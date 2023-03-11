@@ -1,204 +1,219 @@
-use alloc::{boxed::Box, string::String, sync::Arc};
+use alloc::{alloc::Global, boxed::Box};
 use core::{
-    cell::SyncUnsafeCell,
-    fmt::Debug,
-    iter::Step,
-    mem::MaybeUninit,
-    num::NonZeroU64,
-    ptr,
-    sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, AtomicUsize, Ordering},
+    alloc::{AllocError, Allocator, Layout},
+    cell::{Cell, SyncUnsafeCell},
+    mem::{self, ManuallyDrop, MaybeUninit},
+    ptr::{self, addr_of_mut, NonNull},
+    sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicUsize},
 };
 
-use hal::{
-    interrupts,
-    task::{context_switch, Context},
-};
+use hal::task::Context;
+use log::trace;
 
-use super::hw_thread_id;
+use super::{
+    current, exit,
+    task_types::{allocate_id, AtomicState, Head, Policy, Task, TaskVTable},
+};
 use crate::{
-    memory::{AddrSpace, KERNEL_ADDRESS_SPACE},
-    task::scheduler,
+    error::KernResult,
+    memory::{self, AllocOptions},
 };
 
-pub fn park() {
-    interrupts::without(|_| {
-        let hwt = hw_thread_id();
-        unsafe { scheduler().redispatch(hwt) };
-    })
+pub fn spawn<F, T>(f: F) -> KernResult<Thread>
+where
+    F: FnOnce() -> T + 'static + Send,
+{
+    Builder::new().spawn(f)
 }
 
-pub fn yield_now() {
-    interrupts::without(|_| {
-        let hwt = hw_thread_id();
-        unsafe { scheduler().yield_now(hwt) };
-    })
-}
-
-pub fn current() -> Thread {
-    interrupts::without(|_| {
-        let hwt = hw_thread_id();
-        unsafe { scheduler().current(hwt) }
-    })
-}
-
-pub type StartFn = extern "C" fn(*mut ()) -> !;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ThreadId(NonZeroU64);
-
-#[derive(Clone)]
-pub struct Thread(Arc<Inner>);
+#[derive(Debug, Clone)]
+pub struct Thread(pub Task);
 
 impl Thread {
-    pub(super) unsafe fn current(name: Option<String>) -> Thread {
-        let inner = Inner {
-            id: allocate_id(),
-            name,
-            saved_context: AtomicPtr::new(ptr::null_mut()),
-            stack: Box::new(SyncUnsafeCell::new([])),
-            affinity: AtomicUsize::new(hw_thread_id()),
-            is_scheduled: AtomicBool::new(false),
-            addr_space: AddrSpace::Kernel,
-        };
-        Thread(Arc::new(inner))
-    }
-
-    pub fn id(&self) -> ThreadId {
-        self.0.id
-    }
-
-    pub fn name(&self) -> Option<&str> {
-        self.0.name.as_deref()
-    }
-
-    pub fn affinity(&self) -> usize {
-        self.0.affinity.load(Ordering::Acquire)
-    }
-
     pub fn unpark(self) {
-        _ = self.schedule();
-    }
-
-    pub fn unpark_ref(&self) {
-        self.clone().unpark();
-    }
-
-    fn schedule(self) -> Result<(), Thread> {
-        if !self.try_schedule() {
-            return Err(self);
-        }
-        unsafe { scheduler().schedule(self) };
-        Ok(())
-    }
-
-    fn try_schedule(&self) -> bool {
-        !self.0.is_scheduled.swap(true, Ordering::AcqRel)
-    }
-
-    pub(super) fn deschedule(&self) {
-        self.0.is_scheduled.store(false, Ordering::Release);
-    }
-}
-
-impl Debug for Thread {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("Thread")
-            .field("id", &self.id())
-            .field("name", &self.name())
-            .finish_non_exhaustive()
+        self.0.unpark();
     }
 }
 
 #[derive(Debug)]
 pub struct Builder {
     stack_size: usize,
-    name: Option<String>,
-    addr_space: AddrSpace,
+    policy: Policy,
 }
 
 impl Builder {
-    pub fn new(addr_space: AddrSpace) -> Self {
+    pub fn new() -> Self {
         Self {
-            stack_size: 8192,
-            name: None,
-            addr_space,
+            stack_size: 16384,
+            policy: Policy::Normal(127),
         }
     }
 
-    pub fn stack_size(mut self, stack_size: usize) -> Self {
-        self.stack_size = stack_size;
-        self
+    pub fn spawn<F, T>(self, f: F) -> KernResult<Thread>
+    where
+        F: FnOnce() -> T + 'static + Send,
+    {
+        self.spawn_in(f, KAlloc)
     }
 
-    pub fn spawn(self, start: StartFn, data: *mut ()) -> Thread {
-        let mut stack = allocate_stack(self.stack_size, &self.addr_space);
-        let saved_context = init_stack(&mut stack, start, data);
+    pub fn spawn_in<F, T, A>(self, f: F, allocator: A) -> KernResult<Thread>
+    where
+        A: Allocator + Clone,
+        F: FnOnce() -> T + 'static + Send,
+    {
+        let thread = allocate_thread_in(self, f, allocator)?;
+        thread.clone().unpark();
+        Ok(thread)
+    }
+}
 
-        let inner = Inner {
-            affinity: AtomicUsize::new(0),
+impl Default for Builder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// #[derive(Debug)]
+// pub struct JoinHandle<T>(Thread, PhantomData<fn(T)>);
+
+// impl<T> JoinHandle<T> {
+//     pub fn join(self) -> KernResult<T> {
+//         let inner: NonNull<ThreadInner<(), T, Global>> = self.0 .0 .0.cast();
+//         let futex = unsafe { &inner.as_ref().finished };
+//         while futex.load(Ordering::Acquire) == 0 {
+//             futex::wait(futex, 0);
+//         }
+//     }
+// }
+
+fn allocate_thread_in<F, T, A>(builder: Builder, f: F, allocator: A) -> KernResult<Thread>
+where
+    A: Allocator + Clone,
+    F: FnOnce() -> T + 'static + Send,
+{
+    let mut stack = Box::new_uninit_slice_in(builder.stack_size, allocator.clone());
+
+    let sp = init_stack(entry::<F, T, A>, &mut stack);
+    let allocation = Box::new_uninit_in(allocator);
+    let (ptr, allocator) = Box::into_raw_with_allocator(allocation);
+
+    let inner = ThreadInner {
+        head: Head {
+            state: AtomicState::new(super::task_types::State::Parked),
+            refs: AtomicUsize::new(1),
             id: allocate_id(),
-            is_scheduled: AtomicBool::new(true),
-            name: self.name,
-            saved_context: AtomicPtr::new(saved_context),
-            stack,
-            addr_space: self.addr_space,
-        };
-        let thread = Thread(Arc::new(inner));
-        interrupts::without(|_| unsafe { scheduler().schedule(thread.clone()) });
-        thread
+            link: Default::default(),
+            vtable: &ThreadInner::<F, T, A>::VTABLE,
+            stack_ptr: AtomicPtr::new(sp.as_ptr()),
+            policy: builder.policy,
+            preemptible: AtomicBool::new(true),
+        },
+        stack: SyncUnsafeCell::new(stack),
+        allocator: ManuallyDrop::new(allocator),
+        func: Cell::new(Some(f)),
+        result: Cell::new(None::<T>),
+        finished: AtomicU32::new(0),
+    };
+
+    unsafe {
+        ptr::write(ptr, MaybeUninit::new(inner));
+        let raw = NonNull::new(ptr.cast()).unwrap();
+        Ok(Thread(Task::from_raw(raw)))
     }
 }
 
-struct Inner {
-    id: ThreadId,
-    stack: Box<SyncUnsafeCell<[MaybeUninit<u8>]>>,
-    name: Option<String>,
-    saved_context: AtomicPtr<Context>,
-    affinity: AtomicUsize,
-    is_scheduled: AtomicBool,
-    addr_space: AddrSpace,
-}
-
-fn allocate_id() -> ThreadId {
-    static COUNTER: AtomicU64 = AtomicU64::new(1);
-    let val = COUNTER.fetch_add(1, Ordering::Relaxed);
-    NonZeroU64::new(val)
-        .map(ThreadId)
-        .expect("thread id counter overflow")
-}
-
-pub(super) unsafe fn switch_threads(old: &Thread, new: &Thread) {
-    let old = old.0.saved_context.as_mut_ptr();
-    let new = new.0.saved_context.load(Ordering::Acquire);
-    context_switch(old, new);
-}
-
-fn allocate_stack(size: usize, addr_space: &AddrSpace) -> Box<SyncUnsafeCell<[MaybeUninit<u8>]>> {
-    let region =
-        interrupts::without(|_| KERNEL_ADDRESS_SPACE.lock().allocate_virtual_region(size, 1))
-            .unwrap();
-
-    let ptr: *mut u8 = region.start.addr().as_ptr();
-    let len = Step::steps_between(&region.start, &region.end).unwrap() * 4096;
-    // let layout = Layout::from_size_align(size, 16).expect("invalid thread stack layout");
-
-    let ptr = ptr::slice_from_raw_parts_mut(ptr, len);
-    let ptr = ptr as *mut SyncUnsafeCell<[MaybeUninit<u8>]>;
-    unsafe { Box::from_raw(ptr) }
+extern "C" fn entry<F, T, A>(_: *mut ()) -> !
+where
+    A: Allocator + Clone,
+    F: FnOnce() -> T + 'static + Send,
+{
+    let task = current();
+    let ptr: NonNull<ThreadInner<F, T, A>> = task.0.cast();
+    let f = unsafe { ptr.as_ref().func.take().unwrap_unchecked() };
+    mem::drop(task);
+    f();
+    exit();
 }
 
 fn init_stack(
-    stack: &mut Box<SyncUnsafeCell<[MaybeUninit<u8>]>>,
-    start: StartFn,
-    data: *mut (),
-) -> *mut Context {
-    let top = stack.get_mut().as_mut_ptr_range().end;
-    let top: *mut Context = top.cast();
-    let initial_context = Context::with_initial(start, data);
-
+    entry: extern "C" fn(*mut ()) -> !,
+    stack: &mut [MaybeUninit<u8>],
+) -> NonNull<Context> {
+    let ctx = Context::with_initial(entry, ptr::null_mut());
+    let top: *mut Context = stack.as_mut_ptr_range().end.cast();
     unsafe {
-        let ctx = top.sub(1);
-        ctx.write(initial_context);
-        ctx
+        let sp = top.sub(3);
+        ptr::write(sp, ctx);
+        NonNull::new_unchecked(sp)
     }
+}
+
+#[repr(C)]
+struct ThreadInner<F, T, A = Global>
+where
+    A: Allocator,
+{
+    head: Head,
+    result: Cell<Option<T>>,
+    finished: AtomicU32,
+    stack: SyncUnsafeCell<Box<[MaybeUninit<u8>], A>>,
+    func: Cell<Option<F>>,
+    allocator: ManuallyDrop<A>,
+}
+
+impl<F, T, A> Drop for ThreadInner<F, T, A>
+where
+    A: Allocator,
+{
+    fn drop(&mut self) {
+        trace!("thread drop");
+    }
+}
+
+impl<F, T, A> ThreadInner<F, T, A>
+where
+    A: Allocator,
+{
+    const VTABLE: TaskVTable = TaskVTable {
+        deallocate: deallocate::<F, T, A>,
+        drop_in_place: drop_in_place::<F, T, A>,
+    };
+}
+
+unsafe fn drop_in_place<F, T, A>(head: NonNull<Head>)
+where
+    A: Allocator,
+{
+    let inner: NonNull<ThreadInner<F, T, A>> = head.cast();
+    ptr::drop_in_place(inner.as_ptr());
+}
+
+unsafe fn deallocate<F, T, A>(head: NonNull<u8>)
+where
+    A: Allocator,
+{
+    let inner: NonNull<ThreadInner<F, T, A>> = head.cast();
+    let layout = Layout::new::<ThreadInner<F, T, A>>();
+
+    // Deallocate will be called after drop_in_place, so we use a ManuallyDrop to
+    // prevent the allocator from being dropped, then use addr_of_mut!() to access the
+    // location of the allocator, take it out of the object, then deallocate.
+    let slot = addr_of_mut!((*inner.as_ptr()).allocator);
+    let allocator = ManuallyDrop::take(&mut *slot);
+    allocator.deallocate(head.cast(), layout);
+}
+
+#[derive(Debug, Clone, Copy)]
+struct KAlloc;
+
+unsafe impl Allocator for KAlloc {
+    fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
+        AllocOptions::new(layout.size())
+            .start_guard_pages(1)
+            .end_guard_pages(1)
+            .allocate_in_address_space(&memory::AddrSpace::Kernel)
+            .map_err(|_| AllocError)
+    }
+
+    unsafe fn deallocate(&self, _ptr: NonNull<u8>, _layout: Layout) {}
 }

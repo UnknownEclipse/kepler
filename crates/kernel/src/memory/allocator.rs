@@ -1,45 +1,40 @@
 use core::{
     alloc::{AllocError, Allocator, GlobalAlloc, Layout},
-    iter::Step,
     ptr::{self, NonNull},
 };
 
 use divvy::{global::WrapAsGlobal, hybrid::HybridAllocator};
-use hal::interrupts;
 use linked_list_allocator::LockedHeap;
 use log::trace;
 
-use super::{KERNEL_ADDRESS_SPACE, PAGE_SIZE};
+use crate::{
+    error::KernResult,
+    memory::{AddrSpace, AllocOptions},
+};
 
 const HEAP_SIZE: usize = 1 << 18;
 
-pub fn init() {
+pub unsafe fn init() -> KernResult<()> {
     trace!("beginning initialization");
-    interrupts::without(|_| {
-        let mut addrspace = KERNEL_ADDRESS_SPACE.lock();
 
-        trace!("allocating kernel heap...");
-        let region = addrspace
-            .allocate_virtual_region(HEAP_SIZE, 0)
-            .expect("failed to kernel heap");
+    trace!("allocating kernel heap...");
+    let region = AllocOptions::new(HEAP_SIZE)
+        .start_guard_pages(1)
+        .end_guard_pages(1)
+        .allocate_in_address_space(&AddrSpace::Kernel)?;
 
-        let ptr = region.start.addr().as_ptr();
-        let len = Step::steps_between(&region.start, &region.end).unwrap() * PAGE_SIZE;
-        let region = ptr::slice_from_raw_parts_mut(ptr, len);
-        let region = NonNull::new(region).unwrap();
+    trace!("finished allocating kernel heap: {:#p}", region);
 
-        trace!("finished allocating kernel heap: {:#p}", region);
+    trace!("initializing primary allocator...");
 
-        trace!("initializing primary allocator...");
-        unsafe {
-            ALLOCATOR
-                .get()
-                .try_init_primary(LinkedListAllocator::new(region))
-                .unwrap_or_else(|_| panic!("failed to initialize allocator"));
-        }
-        trace!("finished initializing primary allocator");
-    });
+    ALLOCATOR
+        .get()
+        .try_init_primary(LinkedListAllocator::new(region))
+        .unwrap_or_else(|_| panic!("failed to initialize allocator"));
+
+    trace!("finished initializing primary allocator");
     trace!("finished initialization");
+    Ok(())
 }
 
 #[global_allocator]

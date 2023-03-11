@@ -11,7 +11,6 @@ divvy = { version = "0.1.0", path = "../divvy" }
 entropy = { version = "0.1.0", path = "../entropy" }
 hal = { version = "0.1.0", path = "../hal" }
 hal2 = { version = "0.1.0", path = "../hal2" }
-holo = { version = "0.1.0", path = "../holo" }
 lagrange = { version = "0.1.0", path = "../lagrange" }
 limine = "0.1.10"
 limine-protocol = "0.4.0"
@@ -25,6 +24,8 @@ rand_chacha = { version = "0.3.1", default-features = false }
 spin = "0.9.5"
 staticvec = { version = "0.11.9", default-features = false }
 tracing = { version = "0.1.37", default-features = false }
-tracing-subscriber = { version = "0.3.16", default-features = false, features = ["alloc"] }
+tracing-subscriber = { version = "0.3.16", default-features = false, features = [
+    "alloc",
+] }
 uart_16550 = { version = "0.2.18", features = ["nightly"] }
 x86_64 = "0.14.10"

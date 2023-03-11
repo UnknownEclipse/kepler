@@ -1,4 +1,8 @@
-use core::fmt::{self, Write};
+use alloc::{boxed::Box, vec::Vec};
+use core::{
+    alloc::AllocError,
+    fmt::{self, Write},
+};
 
 use hal::interrupts;
 use limine::{LimineTerminalRequest, LimineTerminalResponse};
@@ -47,6 +51,24 @@ pub struct StdoutLock<'a> {
     guard: SpinMutexGuard<'a, StdoutInner>,
 }
 
+impl<'a> StdoutLock<'a> {
+    pub fn register_additional_writer<W>(&mut self, writer: W) -> KernResult<()>
+    where
+        W: Write + Send + 'static,
+    {
+        let boxed = Box::try_new(writer)?;
+
+        self.guard
+            .extra_writers
+            .try_reserve(1)
+            .map_err(|_| AllocError)?;
+
+        self.guard.extra_writers.push(boxed);
+
+        Ok(())
+    }
+}
+
 impl<'a> Write for StdoutLock<'a> {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
         self.guard.write_str(s)
@@ -66,6 +88,8 @@ macro_rules! println {
 
 pub(crate) use print;
 pub(crate) use println;
+
+use crate::error::KernResult;
 
 #[doc(hidden)]
 pub fn _print(args: fmt::Arguments) {
@@ -96,44 +120,60 @@ static STDOUT: Lazy<SpinMutex<StdoutInner>> =
     Lazy::new(|| SpinMutex::new(unsafe { StdoutInner::new() }));
 
 struct StdoutInner {
-    serial_port: SerialPort,
-    limine_terminal_response: Option<&'static LimineTerminalResponse>,
-}
-
-impl StdoutInner {
-    fn write_limine(&self, msg: &str) {
-        let Some(response) = self.limine_terminal_response else {
-            return;
-        };
-        let Some(terminal) = response.terminals().iter().next() else {
-            return;
-        };
-        let Some(write) = response.write() else {
-            return;
-        };
-        write(terminal, msg);
-    }
+    serial_port: Option<SerialPort>,
+    limine_terminal: Option<LimineWriter>,
+    extra_writers: Vec<Box<dyn Write + Send>>,
 }
 
 impl StdoutInner {
     unsafe fn new() -> Self {
         let mut serial_port = SerialPort::new(PORT_NUMBER);
         serial_port.init();
+
         let terminal_response = TERMINAL_REQUEST.get_response().get();
 
         Self {
-            serial_port,
-            limine_terminal_response: terminal_response,
+            serial_port: Some(serial_port),
+            limine_terminal: terminal_response.map(LimineWriter),
+            extra_writers: Vec::new(),
         }
     }
 }
 
 impl Write for StdoutInner {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
-        self.serial_port.write_str(s)?;
-        self.write_limine(s);
+        if let Some(serial_port) = &mut self.serial_port {
+            serial_port.write_str(s)?;
+        }
+        if let Some(limine_terminal) = &mut self.limine_terminal {
+            limine_terminal.write_str(s)?;
+        }
+        for writer in self.extra_writers.iter_mut() {
+            writer.write_str(s)?;
+        }
         Ok(())
     }
 }
 
 unsafe impl Send for StdoutInner {}
+
+struct LimineWriter(&'static LimineTerminalResponse);
+
+impl LimineWriter {
+    fn write(&self, msg: &str) {
+        let Some(terminal) = self.0.terminals().iter().next() else {
+            return;
+        };
+        let Some(write) = self.0.write() else {
+            return;
+        };
+        write(terminal, msg);
+    }
+}
+
+impl Write for LimineWriter {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        self.write(s);
+        Ok(())
+    }
+}

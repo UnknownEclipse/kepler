@@ -1,5 +1,12 @@
 #![no_std]
-#![feature(abi_x86_interrupt, asm_const, naked_functions, never_type)]
+#![feature(
+    abi_x86_interrupt,
+    asm_const,
+    naked_functions,
+    never_type,
+    sync_unsafe_cell,
+    used_with_arg
+)]
 
 use core::ptr;
 

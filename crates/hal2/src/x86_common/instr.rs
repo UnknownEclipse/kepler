@@ -1,15 +1,17 @@
 #![allow(clippy::missing_safety_doc)]
 
-use core::{
-    arch::{
-        asm,
-        x86_64::{
-            _rdrand16_step, _rdrand32_step, _rdrand64_step, _rdseed16_step, _rdseed32_step,
-            _rdseed64_step,
-        },
+use core::arch::{
+    asm,
+    x86_64::{
+        _rdrand16_step, _rdrand32_step, _rdrand64_step, _rdseed16_step, _rdseed32_step,
+        _rdseed64_step,
     },
-    mem,
 };
+
+use vm_types::VirtAddr;
+
+use super::interrupts::IdtPtr;
+use crate::x86_64::gdt::GdtPtr;
 
 #[inline]
 pub unsafe fn out8(port: u16, value: u8) {
@@ -172,25 +174,13 @@ pub unsafe fn rdseed64() -> Option<u64> {
 }
 
 #[inline]
-pub unsafe fn lidt(ptr: *const u8, n: usize) {
-    const IDT_ENTRY_SIZE: usize = 2 * mem::size_of::<usize>();
-
-    let limit = (n * IDT_ENTRY_SIZE) as u16 - 1;
-    let base = ptr;
-    let ptr = DescTablePtr { limit, base };
-
-    asm!("lidt [{}]", in(reg) &ptr, options(nomem, nostack, preserves_flags));
+pub unsafe fn lidt(ptr: *const IdtPtr) {
+    asm!("lidt [{}]", in(reg) ptr, options(readonly, nostack, preserves_flags));
 }
 
 #[inline]
-pub unsafe fn lgdt(ptr: *const u8, n: usize) {
-    const GDT_ENTRY_SIZE: usize = 2 * mem::size_of::<usize>();
-
-    let limit = (n * GDT_ENTRY_SIZE) as u16 - 1;
-    let base = ptr;
-    let ptr = DescTablePtr { limit, base };
-
-    asm!("lgdt {}", in(reg) &ptr, options(nomem, nostack, preserves_flags));
+pub unsafe fn lgdt(ptr: *const GdtPtr) {
+    asm!("lgdt [{}]", in(reg) ptr, options(nomem, nostack, preserves_flags));
 }
 
 #[inline]
@@ -208,10 +198,11 @@ pub unsafe fn invlpg(addr: *const ()) {
     asm!("invlpg [{}]", in(reg) addr, options(nomem, nostack, preserves_flags));
 }
 
-#[repr(C, align(2))]
+#[repr(C, packed(2))]
+#[derive(Debug, Clone, Copy)]
 struct DescTablePtr {
-    limit: u16,
-    base: *const u8,
+    pub limit: u16,
+    pub base: VirtAddr,
 }
 
 #[inline]

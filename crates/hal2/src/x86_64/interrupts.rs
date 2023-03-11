@@ -1,6 +1,9 @@
+use core::num::NonZeroU8;
+
 use vm_types::VirtAddr;
 
 use self::private::Sealed;
+use super::reg::cs;
 pub use crate::x86_common::interrupts::*;
 use crate::{read_volatile, write_volatile};
 
@@ -61,8 +64,9 @@ impl X86_64StackFrameExt for StackFrame {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct InterruptGate {
     offset_low: u16,
-    segment_selector: u16,
-    options: GateOptions,
+    pub segment_selector: u16,
+    pub ist: Option<NonZeroU8>,
+    pub options: GateOptions,
     offset_mid: u16,
     offset_high: u32,
     _reserved: u32,
@@ -73,6 +77,7 @@ impl InterruptGate {
         Self {
             offset_low: 0,
             segment_selector: 0,
+            ist: None,
             options: GateOptions::new(GateKind::Interrupt),
             offset_mid: 0,
             offset_high: 0,
@@ -85,6 +90,7 @@ impl InterruptGate {
         self.offset_low = addr as u16;
         self.offset_mid = addr.wrapping_shr(16) as u16;
         self.offset_high = addr.wrapping_shr(32) as u32;
+        self.segment_selector = unsafe { cs::read() };
         self.options.set_present(true);
         self
     }

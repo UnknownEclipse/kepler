@@ -55,6 +55,9 @@ pub unsafe trait PageTable {
     /// Attempt to look up the frame that a given page is mapped to.
     fn lookup(&mut self, page: Page) -> Option<Frame>;
 
+    /// # Safety
+    /// 1. This has the capacity to switch every address out from beneath the feet of any
+    /// active tasks. Use this very carefully!
     unsafe fn load(&'static self);
 }
 

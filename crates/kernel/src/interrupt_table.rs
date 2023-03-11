@@ -1,58 +1,38 @@
-use hal::interrupts::{self, enable, ExceptionHandler, InterruptTable};
+use hal::{
+    interrupts::{self, enable, ExceptionHandler, InterruptTable, StackFrame},
+    x86_64::interrupts::PageFaultError,
+};
 use log::{info, trace};
-use spin::{Lazy, Once};
-use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
+use spin::Lazy;
 
 pub unsafe fn init() {
-    interrupts::without(|_| {
-        LOAD.call_once(|| {
-            trace!("beginning initialization");
-            let idt = &*IDT;
-            trace!("loading interrupt table");
-            idt.load();
-            trace!("finished loading interrupt table");
-            trace!("finished initialization");
-        });
-    });
+    debug_assert!(!interrupts::are_enabled());
+
+    trace!("beginning initialization");
+    let table = &*TABLE;
+    trace!("loading interrupt table");
+    table.load();
+    trace!("finished loading interrupt table");
 
     enable();
+    trace!("enabled interrupts");
+
+    trace!("finished initialization");
 }
 
-static LOAD: Once = Once::new();
 static TABLE: Lazy<InterruptTable> = Lazy::new(build_table);
-static IDT: Lazy<InterruptDescriptorTable> = Lazy::new(build_idt);
-
-fn build_idt() -> InterruptDescriptorTable {
-    let mut idt = InterruptDescriptorTable::new();
-    idt.double_fault.set_handler_fn(double_fault_handler);
-    idt.breakpoint.set_handler_fn(breakpoint_handler);
-    idt.page_fault.set_handler_fn(page_fault_handler);
-    idt
-}
 
 fn build_table() -> InterruptTable {
     trace!("building interrupt table");
     let mut table = InterruptTable::new();
     table.breakpoint.set_handler::<BreakpointHandler>();
+    table.page_fault.set_handler::<PageFaultHandler>();
     table.double_fault.set_handler::<DoubleFaultHandler>();
-
-    // table.page_fault.set_handler::<PageFaultHandler>();
+    table
+        .general_protection_fault
+        .set_handler::<GeneralProtectionFaultHandler>();
     trace!("finished building interrupt table");
     table
-}
-
-extern "x86-interrupt" fn double_fault_handler(stack_frame: InterruptStackFrame, error: u64) -> ! {
-    panic!("double fault: {:#x}: {:#?}", error, stack_frame);
-}
-
-extern "x86-interrupt" fn page_fault_handler(
-    stack_frame: InterruptStackFrame,
-    error: PageFaultErrorCode,
-) {
-    panic!("page fault: {:#x}: {:#?}", error, stack_frame);
-}
-extern "x86-interrupt" fn breakpoint_handler(stack_frame: InterruptStackFrame) {
-    info!("breakpoint");
 }
 
 #[derive(Debug)]
@@ -62,8 +42,39 @@ impl ExceptionHandler for DoubleFaultHandler {
     type Error = u64;
     type Output = !;
 
-    fn handle(stack_frame: &mut interrupts::StackFrame, error: Self::Error) -> Self::Output {
+    fn handle(stack_frame: &mut StackFrame, error: Self::Error) -> Self::Output {
         panic!("double fault: {:#x}: {:#?}", error, stack_frame);
+    }
+}
+
+#[derive(Debug)]
+struct GeneralProtectionFaultHandler;
+
+impl ExceptionHandler for GeneralProtectionFaultHandler {
+    type Error = u64;
+    type Output = ();
+
+    fn handle(stack_frame: &mut StackFrame, error: Self::Error) -> Self::Output {
+        panic!("general protection fault: {:#x}: {:#?}", error, stack_frame);
+    }
+}
+
+#[derive(Debug)]
+struct PageFaultHandler;
+
+impl ExceptionHandler for PageFaultHandler {
+    type Error = PageFaultError;
+    type Output = ();
+
+    fn handle(stack_frame: &mut StackFrame, error: Self::Error) -> Self::Output {
+        if error.is_protection_violation() {
+            panic!("page fault: {:#x}: {:#?}", error, stack_frame);
+        } else if error.is_user() {
+            // Check if address is within user heap region to determine if it's safe to
+            // map.
+            todo!("userspace lazy page mapping")
+        }
+        todo!("lazy page mapping");
     }
 }
 
@@ -74,7 +85,7 @@ impl ExceptionHandler for BreakpointHandler {
     type Error = ();
     type Output = ();
 
-    fn handle(_stack_frame: &mut interrupts::StackFrame, _error: ()) {
+    fn handle(_stack_frame: &mut StackFrame, _error: ()) {
         info!("breakpoint");
     }
 }

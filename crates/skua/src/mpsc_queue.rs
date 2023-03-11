@@ -70,7 +70,7 @@ struct UnsafeMpscQueue {
 
 impl UnsafeMpscQueue {
     pub const unsafe fn new(stub: NonNull<Link>) -> Self {
-        ptr::write(stub.as_ref().next.as_mut_ptr(), ptr::null_mut());
+        ptr::write(stub.as_ref().next.as_ptr(), ptr::null_mut());
 
         Self {
             head: AtomicPtr::new(stub.as_ptr()),
@@ -147,7 +147,7 @@ impl<T> LoadUnsync for AtomicPtr<T> {
     type Value = *mut T;
 
     unsafe fn load_unsync(&self) -> Self::Value {
-        *self.as_mut_ptr()
+        *self.as_ptr()
     }
 }
 
@@ -160,6 +160,6 @@ impl<T> StoreUnsync for AtomicPtr<T> {
     type Value = *mut T;
 
     unsafe fn store_unsync(&self, value: Self::Value) {
-        *self.as_mut_ptr() = value;
+        *self.as_ptr() = value;
     }
 }

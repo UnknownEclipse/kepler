@@ -1,5 +1,6 @@
-use core::{marker::PhantomData, num::NonZeroU16};
+use core::{cell::SyncUnsafeCell, marker::PhantomData, mem};
 
+use bitflags::bitflags;
 use vm_types::VirtAddr;
 
 use super::{
@@ -36,8 +37,9 @@ pub(crate) unsafe fn wait() {
     hlt()
 }
 
+#[repr(C, align(16))]
 #[derive(Debug)]
-pub struct InterruptTable<const N: usize = 224> {
+pub struct InterruptTable {
     pub divide_error: ExceptionEntry<(), ()>,
     pub debug: ExceptionEntry<(), ()>,
     pub non_maskable_interrupt: ExceptionEntry<(), ()>,
@@ -52,7 +54,7 @@ pub struct InterruptTable<const N: usize = 224> {
     pub segment_not_present: ExceptionEntry<u64, ()>,
     pub stack_segment_fault: ExceptionEntry<u64, ()>,
     pub general_protection_fault: ExceptionEntry<u64, ()>,
-    pub page_fault: ExceptionEntry<u64, ()>,
+    pub page_fault: ExceptionEntry<PageFaultError, ()>,
     _reserved0: InterruptGate,
     pub x87_floating_point: ExceptionEntry<(), ()>,
     pub alignment_check: ExceptionEntry<u64, ()>,
@@ -63,10 +65,18 @@ pub struct InterruptTable<const N: usize = 224> {
     pub vmm_communication_exception: ExceptionEntry<u64, ()>,
     pub security_exception: ExceptionEntry<u64, ()>,
     _reserved2: InterruptGate,
-    interrupts: [InterruptEntry; N],
+    interrupts: [InterruptEntry; 224],
+    ptr: SyncUnsafeCell<IdtPtr>,
 }
 
-impl<const N: usize> InterruptTable<N> {
+#[repr(C, packed(2))]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct IdtPtr {
+    limit: u16,
+    base: VirtAddr,
+}
+
+impl InterruptTable {
     pub const fn new() -> Self {
         InterruptTable {
             divide_error: ExceptionEntry::empty(),
@@ -90,16 +100,27 @@ impl<const N: usize> InterruptTable<N> {
             virtualization: ExceptionEntry::empty(),
             vmm_communication_exception: ExceptionEntry::empty(),
             security_exception: ExceptionEntry::empty(),
-            interrupts: [InterruptEntry::empty(); N],
             coprocessor_segment_overrun: ExceptionEntry::empty(),
             _reserved0: InterruptGate::new(),
             _reserved1: [InterruptGate::new(); 8],
             _reserved2: InterruptGate::new(),
+            interrupts: [InterruptEntry::empty(); 256 - 32],
+            ptr: SyncUnsafeCell::new(IdtPtr {
+                limit: 0,
+                base: VirtAddr::zero(),
+            }),
         }
     }
 
     pub fn load(&'static self) {
-        unsafe { lidt(self as *const Self as *const u8, N + 32) };
+        let slot = self.ptr.get();
+        unsafe {
+            slot.write(IdtPtr {
+                limit: mem::size_of::<Self>() as u16 - 11,
+                base: VirtAddr::from_ptr(self),
+            })
+        };
+        unsafe { lidt(slot) };
     }
 }
 
@@ -123,7 +144,7 @@ impl InterruptEntry {
         self.set_raw_handler(interrupt_trampoline::<H>);
     }
 
-    fn set_raw_handler(&mut self, handler: extern "x86-interrupt" fn(StackFrame)) {
+    pub fn set_raw_handler(&mut self, handler: extern "x86-interrupt" fn(StackFrame)) {
         let addr = handler as usize;
         self.gate.set_handler_addr(VirtAddr::from_usize(addr));
     }
@@ -134,6 +155,29 @@ where
     H: InterruptHandler,
 {
     H::handle(&mut stack_frame);
+}
+
+bitflags! {
+    pub struct PageFaultError: u64 {
+        const PROTECTION_VIOLATION = 1 << 0;
+        const WRITE = 1 << 1;
+        const USER = 1 << 2;
+        const RESERVED_WRITE = 1 << 3;
+        const INSTRUCTION_FETCH = 1 << 4;
+        const PROTECTION_KEY = 1 << 5;
+        const SHADOW_STACK = 1 << 6;
+        const SGX = 1 << 7;
+    }
+}
+
+impl PageFaultError {
+    pub fn is_protection_violation(&self) -> bool {
+        self.contains(PageFaultError::PROTECTION_VIOLATION)
+    }
+
+    pub fn is_user(&self) -> bool {
+        self.contains(PageFaultError::USER)
+    }
 }
 
 #[repr(transparent)]
@@ -158,7 +202,7 @@ impl<E, R> ExceptionEntry<E, R> {
         self.set_raw_handler(exception_trampoline::<H>);
     }
 
-    fn set_raw_handler(&mut self, handler: extern "x86-interrupt" fn(StackFrame, E) -> R) {
+    pub fn set_raw_handler(&mut self, handler: extern "x86-interrupt" fn(StackFrame, E) -> R) {
         let addr = handler as usize;
         self.gate.set_handler_addr(VirtAddr::from_usize(addr));
     }
@@ -176,26 +220,15 @@ where
 
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct GateOptions(u16);
+pub(crate) struct GateOptions(u8);
 
 impl GateOptions {
     pub const fn new(kind: GateKind) -> Self {
-        Self(kind.bits() << 8)
+        Self(kind.bits())
     }
 
     pub fn set_present(&mut self, present: bool) -> &mut Self {
-        self.0 = bitfrob::u16_with_bit(15, self.0, present);
-        self
-    }
-
-    pub fn set_gate_kind(&mut self, kind: GateKind) -> &mut Self {
-        self.0 = bitfrob::u16_with_value(8, 11, self.0, kind.bits());
-        self
-    }
-
-    pub fn set_interrupt_stack_table_index(&mut self, index: Option<NonZeroU16>) -> &mut Self {
-        let index = index.map(|v| v.get()).unwrap_or(0);
-        self.0 = bitfrob::u16_with_value(0, 2, self.0, index);
+        self.0 = bitfrob::u8_with_bit(7, self.0, present);
         self
     }
 }
@@ -207,7 +240,7 @@ pub(crate) enum GateKind {
 }
 
 impl GateKind {
-    const fn bits(&self) -> u16 {
+    const fn bits(&self) -> u8 {
         match self {
             GateKind::Interrupt => 0xe,
             GateKind::Trap => 0xf,

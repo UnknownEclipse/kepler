@@ -1,0 +1,61 @@
+= Sol: The Microkernel behind Kepler
+
+Sol is designed to be extremely lightweight and simple. Every capability it has must have
+a _solid_ purpose.
+
+== Communication
+
+As a microkernel, Sol needs to allow extremely efficient communication between processes
+and itself. The key primitives used for this are: shared memory, futexes, and kernel
+objects.
+
+All processes start out with a single shared memory object that can be mapped to create
+a region of memory shared between the process and the kernel. That shared memory is
+used as a pair of queues synchronized by futexes. The same design is also used between
+processes. Primitives for working with these queues will be provided as part of the
+standard runtime. This design has several advantages:
+
+1. Simple: The channel abstraction is simple and used in many high level concurrency
+frameworks.
+2. Efficient: Keeping the queues in shared memory allows processes to interact as if
+they were running in the same address space, minimizing copying and the amount of kernel
+interaction.  This model also allows for queueing commands and responses in userspace before making a
+single system call (`futex_wake`) to notify the receiver. (This is just like io_uring,
+only for everything on the system).
+3. The basic primitives used are already necessary for other components, so there is 
+very little additional work to be done.
+
+== Kernel Objects
+
+Sol uses kernel objects as its basic primitive in userspace. Kernel objects are used
+to represent resources and capabilities in userspace. For example, some device drivers
+may need direct access to physical memory. The `phys_mem_t` object grants exclusive
+access to a physical memory region.
+
+=== Memory Objects
+
+Memory objects are kernel objects that may be mapped into the address space of a process.
+Examples of this include physical memory regions, shared memory, file-backed memory,
+and more.
+
+== System Calls
+
+=== Map
+
+[,c]
+----
+typedef long au_kern_t;
+typedef au_kern_t au_mem_t;
+
+void *au_map(au_mem_t m, size_t *len);
+----
+
+=== Map
+
+[,c]
+----
+typedef long au_kern_t;
+typedef au_kern_t au_mem_t;
+
+void *au_map(au_mem_t m, size_t *len);
+----

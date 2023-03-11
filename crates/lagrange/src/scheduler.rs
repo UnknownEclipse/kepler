@@ -178,7 +178,7 @@ unsafe fn switch_tasks(old: &RawTask, new: &RawTask) {
     debug_assert!(!interrupts::are_enabled());
 
     let reenable_interrupts = new.header().interrupts_enabled.load(Ordering::Acquire);
-    let old = old.header().context.as_mut_ptr();
+    let old = old.header().context.as_ptr();
     let new = new.header().context.load(Ordering::Acquire);
 
     if reenable_interrupts {
