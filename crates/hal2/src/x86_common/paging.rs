@@ -2,8 +2,8 @@ use core::ptr;
 
 use bitflags::bitflags;
 use vm_types::{
-    Caching, Frame, FrameAllocError, FrameAllocator, MapOptions, Page, PageTableError, PhysAddr,
-    VirtAddr,
+    Caching, Frame, FrameAllocError, FrameAllocator, MapOptions, Page, PageLookupError,
+    PageTableError, PhysAddr, VirtAddr,
 };
 
 use super::{instr::invlpg, reg::cr3};
@@ -148,7 +148,7 @@ unsafe impl vm_types::PageTable for DirectlyMappedPageTable {
         cr3::write(reg);
     }
 
-    fn lookup(&mut self, page: Page) -> Option<Frame> {
+    fn lookup(&mut self, page: Page) -> Result<Frame, PageLookupError> {
         let [l3_index, l2_index, l1_index, l0_index] = address_parts(page.addr().as_usize());
 
         let base = self.phys_base;
@@ -160,9 +160,9 @@ unsafe impl vm_types::PageTable for DirectlyMappedPageTable {
 
         let entry = l1.0[l0_index];
         if entry.is_present() {
-            Some(entry.frame())
+            Ok(entry.frame())
         } else {
-            None
+            Err(PageLookupError::MissingPageEntry(entry.0))
         }
     }
 }
@@ -171,16 +171,16 @@ fn try_get_subtable(
     parent: &mut RawPageTable,
     i: usize,
     phys_base: VirtAddr,
-) -> Option<&mut RawPageTable> {
+) -> Result<&mut RawPageTable, PageLookupError> {
     let phys_base = phys_base.as_ptr::<u8>();
     let entry = parent.get_entry(i);
 
     if entry.is_present() {
         let phys = entry.frame().addr().as_usize();
         let virt = unsafe { phys_base.add(phys) };
-        unsafe { Some(&mut *virt.cast()) }
+        unsafe { Ok(&mut *virt.cast()) }
     } else {
-        None
+        Err(PageLookupError::MissingPageTable(entry.0))
     }
 }
 

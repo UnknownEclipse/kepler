@@ -6,6 +6,7 @@ use core::{
 
 use super::task_types::{allocate_id, AtomicState, Head, Policy, State, Task, TaskVTable};
 
+/// Create a task that refers to the current task.
 pub unsafe fn allocate_bootstrap_task() -> Task {
     let head = Head {
         id: allocate_id(),

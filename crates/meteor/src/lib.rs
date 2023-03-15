@@ -1,12 +1,16 @@
 #![no_std]
+#![feature(atomic_mut_ptr)]
 
 use core::{cell::Cell, ptr::NonNull};
 
 pub use memoffset::offset_of;
 
 pub mod linked_list;
+pub mod linked_stack;
+pub mod mpsc_queue;
 pub mod singly_linked_list;
-pub mod tail_queue;
+pub mod singly_linked_tail_list;
+pub mod tail_list;
 
 pub trait Node<Link> {
     fn into_link(node: Self) -> NonNull<Link>;
@@ -18,7 +22,7 @@ pub trait Node<Link> {
 
 #[repr(transparent)]
 #[derive(Debug, Default)]
-pub struct DynSinglePtrLink(Cell<Option<NonNull<Self>>>);
+pub struct DynSinglePtrLink(pub Cell<Option<NonNull<Self>>>);
 
 impl DynSinglePtrLink {
     pub const fn new() -> Self {

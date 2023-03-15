@@ -21,6 +21,7 @@ pub unsafe fn init() -> KernResult<()> {
     let region = AllocOptions::new(HEAP_SIZE)
         .start_guard_pages(1)
         .end_guard_pages(1)
+        .lazy_commit()
         .allocate_in_address_space(&AddrSpace::Kernel)?;
 
     trace!("finished allocating kernel heap: {:#p}", region);

@@ -1,5 +1,5 @@
 use core::{
-    fmt::Debug,
+    fmt::{Debug, Display},
     hint::unreachable_unchecked,
     mem::ManuallyDrop,
     num::NonZeroU64,
@@ -8,7 +8,11 @@ use core::{
 };
 
 use hal::task::Context;
+use log::info;
 use meteor::{DynSinglePtrLink, Node};
+
+use super::unpark;
+use crate::memory::AddrSpace;
 
 #[derive(Debug)]
 pub struct Head {
@@ -22,6 +26,11 @@ pub struct Head {
     pub preemptible: AtomicBool,
 }
 
+impl Drop for Head {
+    fn drop(&mut self) {
+        info!("task dropped");
+    }
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum State {
     Queued,
@@ -127,7 +136,15 @@ impl Task {
     }
 
     pub fn unpark(self) {
-        super::scheduler().unpark(self);
+        unpark(self);
+    }
+
+    pub fn id(&self) -> TaskId {
+        self.head().id
+    }
+
+    pub fn name(&self) -> Option<&str> {
+        None
     }
 
     pub fn head(&self) -> &Head {
@@ -155,6 +172,14 @@ impl Task {
     pub fn saved_context(&self) -> *mut Context {
         self.head().stack_ptr.load(Ordering::Acquire)
     }
+
+    pub fn address_space(&self) -> &AddrSpace {
+        &AddrSpace::Kernel
+    }
+
+    pub fn policy(&self) -> Policy {
+        self.head().policy
+    }
 }
 
 unsafe impl Send for Task {}
@@ -172,6 +197,7 @@ impl Drop for Task {
         let n = self.head().refs.fetch_sub(1, Ordering::Relaxed);
 
         if 1 != n {
+            info!("task.drop refs = {}", n);
             return;
         }
 
@@ -179,6 +205,16 @@ impl Drop for Task {
         unsafe {
             (vtable.drop_in_place)(self.0);
             (vtable.deallocate)(self.0.cast());
+        }
+    }
+}
+
+impl Display for Task {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        if let Some(name) = self.name() {
+            write!(f, "<{}>", name)
+        } else {
+            write!(f, "{:#x}", self.id().0)
         }
     }
 }

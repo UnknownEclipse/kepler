@@ -5,7 +5,7 @@ pub use crate::{
     frame::Frame,
     frame_allocator::{FrameAllocError, FrameAllocator},
     page::{Page, PageSize, Size4KiB},
-    page_table::{Caching, MapOptions, PageTable, PageTableError},
+    page_table::{Caching, MapOptions, PageLookupError, PageTable, PageTableError},
     phys_addr::PhysAddr,
     virt_addr::VirtAddr,
     virt_region::VirtRegion,

@@ -1,28 +1,39 @@
+//! This crate provides kernel-level futex primitives. Userspace futexes are built on
+//! top of this. (Namely, user addresses are translated to their kernel equivalents)
+
 use alloc::{boxed::Box, collections::VecDeque, vec::Vec};
 use core::{
+    cell::Cell,
     hash::{BuildHasher, Hash, Hasher},
+    ptr::NonNull,
     sync::atomic::{AtomicU32, Ordering},
 };
 
 use ahash::RandomState;
 use hal::interrupts;
+use meteor::{
+    tail_list::{self, TailList},
+    Node,
+};
 use spin::{mutex::SpinMutex, Lazy};
+use tracing::trace;
 
 use crate::task::{self, Task};
 
 pub fn wait(atomic: &AtomicU32, value: u32) {
+    tracing::trace!("futex.wait({:?})", FutexKey::from_atomic(atomic));
     let bucket = TABLE.bucket(atomic);
     bucket.wait(atomic, value);
 }
 
 pub fn wake_one(atomic: *const AtomicU32) -> bool {
-    interrupts::without(|_| {
-        let bucket = TABLE.bucket(atomic);
-        bucket.wake_one(atomic)
-    })
+    tracing::trace!("futex.wake_one({:?})", FutexKey::from_atomic(atomic));
+    let bucket = TABLE.bucket(atomic);
+    bucket.wake_one(atomic)
 }
 
 pub fn wake_all(atomic: *const AtomicU32) -> usize {
+    tracing::trace!("futex.wake_all({:?})", FutexKey::from_atomic(atomic));
     let bucket = TABLE.bucket(atomic);
     bucket.wake_all(atomic)
 }
@@ -59,6 +70,15 @@ impl Table {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+struct FutexKey(usize);
+
+impl FutexKey {
+    pub fn from_atomic(atomic: *const AtomicU32) -> Self {
+        Self(atomic as usize)
+    }
+}
+
 #[derive(Debug, Default)]
 struct Bucket {
     /// Todo: Consider using a priority queue/btreemap here
@@ -68,29 +88,33 @@ struct Bucket {
 impl Bucket {
     pub fn wait(&self, atomic: &AtomicU32, value: u32) {
         interrupts::without(|_| {
+            let key = FutexKey::from_atomic(atomic);
+
             let mut queue = self.queue.lock();
+            if atomic.load(Ordering::Acquire) != value {
+                return;
+            }
 
             queue.push_back(Waiter {
-                key: atomic as *const AtomicU32 as usize,
+                key,
                 thread: task::current(),
             });
 
             drop(queue);
-            if atomic.load(Ordering::Acquire) != value {
-                return;
-            }
+
             task::park();
         })
     }
 
     pub fn wake_one(&self, atomic: *const AtomicU32) -> bool {
         interrupts::without(|_| {
-            let key = atomic as usize;
             let mut queue = self.queue.lock();
+            let key = FutexKey::from_atomic(atomic);
 
             for i in 0..queue.len() {
                 if queue[i].key == key {
                     if let Some(waiter) = queue.remove(i) {
+                        trace!("futex.wake_one");
                         waiter.thread.unpark();
                         return true;
                     }
@@ -104,17 +128,96 @@ impl Bucket {
         interrupts::without(|_| {
             let mut queue = self.queue.lock();
             let mut woken = 0;
-            let key = atomic as usize;
+            let key = FutexKey::from_atomic(atomic);
 
-            for _ in 0..queue.len() {
-                if let Some(waiter) = queue.pop_front() {
-                    if waiter.key == key {
+            let mut i = 0;
+            while i < queue.len() {
+                if queue[i].key == key {
+                    if let Some(waiter) = queue.remove(i) {
+                        trace!("futex.wake_all");
                         waiter.thread.unpark();
                         woken += 1;
-                    } else {
-                        queue.push_back(waiter);
                     }
+                } else {
+                    i += 1;
                 }
+            }
+
+            woken
+        })
+    }
+}
+
+type PinListTypes = dyn pin_list::Types<
+    Id = pin_list::id::DebugChecked,
+    Protected = (),
+    Removed = (),
+    Unprotected = (),
+>;
+
+#[derive(Default)]
+struct Bucket2 {
+    /// Todo: Consider using a priority queue/btreemap here
+    queue: SpinMutex<TailList<WaiterRef>>,
+}
+
+impl Bucket2 {
+    pub fn wait(&self, atomic: &AtomicU32, value: u32) {
+        interrupts::without(|_| {
+            let key = FutexKey::from_atomic(atomic);
+
+            let mut queue = self.queue.lock();
+
+            if atomic.load(Ordering::Acquire) != value {
+                return;
+            }
+
+            let waiter = Waiter2 {
+                key,
+                thread: Cell::new(Some(task::current())),
+                link: tail_list::Link::new(),
+            };
+
+            let node = WaiterRef(NonNull::from(&waiter));
+            queue.push_back(node);
+
+            drop(queue);
+            let task = task::current();
+            trace!("futex.wait({:?})", task);
+            task::park();
+        })
+    }
+
+    pub fn wake_one(&self, atomic: *const AtomicU32) -> bool {
+        interrupts::without(|_| {
+            let mut queue = self.queue.lock();
+            let key = FutexKey::from_atomic(atomic);
+
+            let waiter = queue
+                .drain_filter(|waiter| unsafe { waiter.0.as_ref().key == key })
+                .next();
+
+            match waiter {
+                Some(waiter) => {
+                    waiter.wake();
+                    true
+                }
+                None => false,
+            }
+        })
+    }
+
+    pub fn wake_all(&self, atomic: *const AtomicU32) -> usize {
+        interrupts::without(|_| {
+            let mut queue = self.queue.lock();
+
+            let key = FutexKey::from_atomic(atomic);
+
+            let waiters = queue.drain_filter(|waiter| unsafe { waiter.0.as_ref().key == key });
+            let mut woken = 0;
+            for waiter in waiters {
+                woken += 1;
+                waiter.wake();
             }
             woken
         })
@@ -123,7 +226,33 @@ impl Bucket {
 
 #[derive(Debug)]
 struct Waiter {
-    key: usize,
+    key: FutexKey,
     thread: Task,
     // link: tail_queue::Link,
+}
+
+struct Waiter2 {
+    key: FutexKey,
+    thread: Cell<Option<Task>>,
+    link: tail_list::Link,
+}
+
+struct WaiterRef(NonNull<Waiter2>);
+
+impl WaiterRef {
+    fn wake(self) {
+        let task = unsafe { self.0.as_ref().thread.take().unwrap_unchecked() };
+        trace!("futex.wake({:?})", task);
+        task.unpark();
+    }
+}
+
+impl Node<tail_list::Link> for WaiterRef {
+    fn into_link(node: Self) -> NonNull<tail_list::Link> {
+        node.0.cast()
+    }
+
+    unsafe fn from_link(link: NonNull<tail_list::Link>) -> Self {
+        Self(link.cast())
+    }
 }

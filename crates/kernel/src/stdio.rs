@@ -4,9 +4,10 @@ use core::{
     fmt::{self, Write},
 };
 
-use hal::interrupts;
+use hal::{interrupts, task::hw_thread_id};
 use limine::{LimineTerminalRequest, LimineTerminalResponse};
-use log::Log;
+use log::{Level, Log};
+use owo_colors::OwoColorize;
 use spin::{
     mutex::{SpinMutex, SpinMutexGuard},
     Lazy,
@@ -14,12 +15,11 @@ use spin::{
 use uart_16550::SerialPort;
 
 pub fn stdout() -> Stdout {
-    Stdout
+    Stdout(())
 }
 
-#[non_exhaustive]
 #[derive(Debug)]
-pub struct Stdout;
+pub struct Stdout(());
 
 impl Stdout {
     pub fn lock<F, T>(&self, f: F) -> T
@@ -89,7 +89,7 @@ macro_rules! println {
 pub(crate) use print;
 pub(crate) use println;
 
-use crate::error::KernResult;
+use crate::{error::KernResult, task};
 
 #[doc(hidden)]
 pub fn _print(args: fmt::Arguments) {
@@ -107,7 +107,26 @@ impl Log for StdoutLogger {
     }
 
     fn log(&self, record: &log::Record) {
-        println!("[{} {}] {}", record.level(), record.target(), record.args());
+        _ = stdout().lock(|w| -> fmt::Result {
+            w.write_str("[")?;
+            match record.level() {
+                Level::Error => write!(w, "{}", record.level().red().bold())?,
+                Level::Warn => write!(w, "{}", record.level().yellow().bold())?,
+                Level::Info => write!(w, "{}", record.level().green().bold())?,
+                Level::Debug => write!(w, "{}", record.level().blue().bold())?,
+                Level::Trace => write!(w, "{}", record.level().white().bold())?,
+            }
+            write!(w, " {}", record.target().bold())?;
+            write!(w, " {}={:#x}", "cpu".bold(), unsafe { hw_thread_id() })?;
+            // if let Ok(t) = task::try_current() {
+            //     write!(w, " {}={}", "task".bold(), t)?;
+            // }
+            w.write_char(']')?;
+            writeln!(w, " {}", record.args())?;
+            Ok(())
+        });
+
+        // println!("{}", "blue!".blue());
     }
 
     fn flush(&self) {}

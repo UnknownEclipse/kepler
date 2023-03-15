@@ -80,4 +80,18 @@ pub mod cs {
         asm!("mov {0:x}, cs", out(reg) value, options(nomem, nostack, preserves_flags));
         value
     }
+
+    #[inline]
+    pub unsafe fn write(cs: usize) {
+        asm!(
+            "push {sel}",
+            "lea {tmp}, [1f + rip]",
+            "push {tmp}",
+            "retfq",
+            "1:",
+            sel = in(reg) cs,
+            tmp = lateout(reg) _,
+            options(preserves_flags),
+        );
+    }
 }

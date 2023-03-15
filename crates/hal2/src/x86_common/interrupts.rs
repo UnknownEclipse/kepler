@@ -9,7 +9,7 @@ use super::{
 };
 use crate::{
     interrupts::{ExceptionHandler, InterruptHandler, StackFrame},
-    x86_64::interrupts::InterruptGate,
+    x86_64::interrupts::{InterruptGate, X86IdtEntryExt},
 };
 
 #[inline]
@@ -205,6 +205,12 @@ impl<E, R> ExceptionEntry<E, R> {
     pub fn set_raw_handler(&mut self, handler: extern "x86-interrupt" fn(StackFrame, E) -> R) {
         let addr = handler as usize;
         self.gate.set_handler_addr(VirtAddr::from_usize(addr));
+    }
+}
+
+impl<E, R> X86IdtEntryExt for ExceptionEntry<E, R> {
+    fn set_ist_index(&mut self, index: crate::x86_64::tss::IstIndex) {
+        self.gate.set_ist_index(index);
     }
 }
 

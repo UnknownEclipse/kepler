@@ -4,28 +4,28 @@ use core::{
     sync::atomic::{AtomicPtr, AtomicU32, Ordering},
 };
 
-use super::thread::Thread;
+use crate::task::Task;
 
 pub struct Local {
     queue: Arc<UnsafeQueue>,
 }
 
 impl Local {
-    pub fn pop(&self) -> Option<Thread> {
+    pub fn pop(&self) -> Option<Task> {
         unsafe {
             let ptr = self.queue.pop_raw();
             to_thread(ptr)
         }
     }
 
-    pub fn push(&mut self, thread: Thread) -> Result<(), Thread> {
+    pub fn push(&mut self, thread: Task) -> Result<(), Task> {
         let raw = thread.into_raw();
 
         unsafe {
-            if self.queue.push_raw(raw.as_ptr()) {
+            if self.queue.push_raw(raw.cast()) {
                 Ok(())
             } else {
-                Err(Thread::from_raw(raw))
+                Err(Task::from_raw(raw))
             }
         }
     }
@@ -36,15 +36,16 @@ pub struct Steal {
 }
 
 impl Steal {
-    pub fn steal_into(&self, into: &mut Local) -> Option<Thread> {
+    pub fn steal_into(&self, into: &mut Local) -> Option<Task> {
         unsafe {
             let ptr = self.queue.steal_raw(&into.queue);
             to_thread(ptr)
         }
     }
 }
-unsafe fn to_thread(ptr: *mut ()) -> Option<Thread> {
-    NonNull::new(ptr).map(|raw| Thread::from_raw(raw))
+
+unsafe fn to_thread(ptr: Option<NonNull<()>>) -> Option<Task> {
+    ptr.map(|ptr| Task::from_raw(ptr.cast()))
 }
 
 #[derive(Debug)]
@@ -69,29 +70,29 @@ impl UnsafeQueue {
         }
     }
 
-    pub fn pop(&self) -> Option<Thread> {
+    pub fn pop(&self) -> Option<Task> {
         unsafe {
             let ptr = self.pop_raw();
             to_thread(ptr)
         }
     }
 
-    pub unsafe fn push(&self, thread: Thread) -> Result<(), Thread> {
-        let raw = thread.into_raw();
+    pub unsafe fn push(&self, task: Task) -> Result<(), Task> {
+        let raw = task.into_raw();
 
-        if self.push_raw(raw.as_ptr()) {
+        if self.push_raw(raw.cast()) {
             Ok(())
         } else {
-            Err(Thread::from_raw(raw))
+            Err(Task::from_raw(raw))
         }
     }
 
-    pub unsafe fn steal_into(&self, into: &UnsafeQueue) -> Option<Thread> {
+    pub unsafe fn steal_into(&self, into: &UnsafeQueue) -> Option<Task> {
         let ptr = self.steal_raw(into);
         to_thread(ptr)
     }
 
-    fn pop_raw(&self) -> *mut () {
+    fn pop_raw(&self) -> Option<NonNull<()>> {
         let mut head = self.head.load(Ordering::Relaxed);
         let tail = self.tail.load(Ordering::Relaxed);
 
@@ -102,16 +103,20 @@ impl UnsafeQueue {
                 Ordering::Acquire,
                 Ordering::Acquire,
             ) {
-                Ok(_) => return self.buffer[(head & MASK) as usize].load(Ordering::Relaxed),
+                Ok(_) => {
+                    return NonNull::new(
+                        self.buffer[(head & MASK) as usize].load(Ordering::Relaxed),
+                    )
+                }
                 Err(h) => {
                     head = h;
                 }
             }
         }
-        ptr::null_mut()
+        None
     }
 
-    unsafe fn push_raw(&self, ptr: *mut ()) -> bool {
+    unsafe fn push_raw(&self, ptr: NonNull<()>) -> bool {
         let head = self.head.load(Ordering::Relaxed);
         let tail = self.tail.load(Ordering::Relaxed);
 
@@ -119,12 +124,12 @@ impl UnsafeQueue {
             return false;
         }
 
-        self.buffer[(tail & MASK) as usize].store(ptr, Ordering::Relaxed);
+        self.buffer[(tail & MASK) as usize].store(ptr.as_ptr(), Ordering::Relaxed);
         self.tail.store(tail.wrapping_add(1), Ordering::Release);
         true
     }
 
-    fn steal_raw(&self, into: &UnsafeQueue) -> *mut () {
+    fn steal_raw(&self, into: &UnsafeQueue) -> Option<NonNull<()>> {
         loop {
             let head = self.head.load(Ordering::Acquire);
             let tail = self.tail.load(Ordering::Acquire);
@@ -133,7 +138,7 @@ impl UnsafeQueue {
                 continue;
             }
             if tail == head {
-                return ptr::null_mut();
+                return None;
             }
 
             let half = tail.wrapping_sub(head) - (tail.wrapping_sub(head) / 2);
@@ -156,7 +161,8 @@ impl UnsafeQueue {
             {
                 let new_tail = into.tail.load(Ordering::Relaxed).wrapping_add(half);
                 into.tail.store(new_tail.wrapping_sub(1), Ordering::Release);
-                return into.buffer[index(new_tail)].load(Ordering::Relaxed);
+                let ptr = into.buffer[index(new_tail)].load(Ordering::Relaxed);
+                return NonNull::new(ptr);
             }
         }
     }

@@ -38,7 +38,7 @@ pub type Blake2bPool = Pool<Blake2b512>;
 ///
 ///
 ///
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct Pool<D> {
     hash: D,
 }

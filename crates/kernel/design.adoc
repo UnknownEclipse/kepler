@@ -59,3 +59,22 @@ typedef au_kern_t au_mem_t;
 
 void *au_map(au_mem_t m, size_t *len);
 ----
+
+== Address Space
+
+Addresses in the upper half of the address space are reserved for the kernel.
+
+Addresses in the middle portion are reserved for shared memory. The shared memory region
+is split globally into shared memory objects to ensure addresses are kept the same
+across processes. Only processes that have been given permission to access a region
+by its creator may access the region.
+
+
+== Capabilities
+
+Processes are granted a set of capabilities on creation. These include:
+
+. The set of system daemons it is allowed to interact with, in turn blocking certain
+capabilities like networking or filesystem access.
+. A maximum limit on the amount of memory allocated, scheduling priority, and kernel
+objects.

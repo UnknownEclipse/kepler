@@ -1,26 +1,28 @@
-use core::{
-    alloc::AllocError,
-    iter::Step,
-    ops::Range,
-    ptr::{self, NonNull},
-};
+use alloc::sync::Arc;
+use core::ptr::{self, NonNull};
 
+use bitflags::bitflags;
 use hal::{
     interrupts,
     paging::DirectlyMappedPageTable,
-    vm_types::{FrameAllocator, MapOptions, Page, PageTable, PageTableError, VirtAddr, VirtRegion},
+    vm_types::{
+        FrameAllocator, MapOptions, Page, PageTable, PageTableError, PhysAddr, VirtAddr, VirtRegion,
+    },
 };
 use limine::{LimineHhdmRequest, LimineMemmapRequest};
 use log::trace;
 use spin::{mutex::SpinMutex, Lazy};
 
-use self::frame_allocator::hhdm_end;
-use crate::error::{KernErrorKind, KernResult};
+pub use self::process::ProcAddrSpace;
+use self::{kernel::KERNEL_ADDRESS_SPACE, user::UserAddressSpace};
+use crate::error::KernResult;
 
 mod allocator;
 mod frame_allocator;
-mod kernel_address_space;
+mod kernel;
 mod page_fault;
+mod process;
+mod user;
 
 pub unsafe fn init() -> KernResult<()> {
     trace!("beginning initialization");
@@ -31,10 +33,14 @@ pub unsafe fn init() -> KernResult<()> {
     Ok(())
 }
 
+pub unsafe fn map_physical_addr(phys: PhysAddr) -> VirtAddr {
+    VirtAddr::from_ptr(hhdm_start().add(phys.as_usize()))
+}
+
 #[derive(Debug, Clone)]
 pub enum AddrSpace {
     Kernel,
-    // Process(Arc<ProcessAddrSpace>),
+    User(Arc<UserAddressSpace>),
 }
 
 impl AddrSpace {
@@ -43,6 +49,7 @@ impl AddrSpace {
             AddrSpace::Kernel => {
                 interrupts::without(|_| KERNEL_ADDRESS_SPACE.lock().allocate(options))
             }
+            AddrSpace::User(_) => todo!("userspace allocations"),
         }
     }
 }
@@ -77,8 +84,8 @@ impl AllocOptions {
         self
     }
 
-    pub fn eager_commit(&mut self) -> &mut Self {
-        self.eager_commit = true;
+    pub fn lazy_commit(&mut self) -> &mut Self {
+        self.eager_commit = false;
         self
     }
 
@@ -87,90 +94,17 @@ impl AllocOptions {
     }
 }
 
-#[derive(Debug)]
-pub struct KernelAddressSpace {
-    kernel_heap_start: VirtAddr,
-    kernel_heap_end: VirtAddr,
-    kernel_heap_ptr: VirtAddr,
-    page_table: DirectlyMappedPageTable,
-}
-
-impl KernelAddressSpace {
-    pub fn page_table(&mut self) -> &mut DirectlyMappedPageTable {
-        &mut self.page_table
-    }
-
-    /// Allocate a virtual region usable by the kernel. If requested, guard pages will
-    /// be inserted above and below the allocation.
-    pub fn allocate(&mut self, options: &AllocOptions) -> KernResult<NonNull<[u8]>> {
-        let num_usable_pages = options.num_pages;
-        let num_pages = num_usable_pages + options.start_guard_pages + options.end_guard_pages;
-
-        // let region = self.allocate_unmapped_region(num_pages)?;
-        let start: *mut u8 = self.kernel_heap_ptr.as_ptr();
-        let end = start.wrapping_add(num_pages * PAGE_SIZE);
-
-        let start = self.kernel_heap_ptr;
-        let end = VirtAddr::from_ptr(end);
-
-        if !(start..self.kernel_heap_end).contains(&end) {
-            return Err(KernErrorKind::AllocError.into());
-        }
-        self.kernel_heap_ptr = end;
-
-        let page_table = &mut self.page_table;
-
-        let mut page = Page::from_base(start).unwrap();
-
-        for _ in 0..options.start_guard_pages {
-            map_guard(page, page_table)?;
-            page = Step::forward(page, 1);
-        }
-
-        let start = page;
-        if options.eager_commit {
-            for _ in 0..num_usable_pages {
-                map_normal(page, page_table)?;
-                page = Step::forward(page, 1);
-            }
-        } else {
-            page = Step::forward(page, num_usable_pages);
-        }
-        let end = page;
-
-        for _ in 0..options.end_guard_pages {
-            map_guard(page, page_table)?;
-            page = Step::forward(page, 1);
-        }
-
-        let ptr = start.addr().as_ptr::<u8>();
-        let len = Step::steps_between(&start, &end).unwrap() * PAGE_SIZE;
-        unsafe {
-            let ptr = ptr::slice_from_raw_parts_mut(ptr, len);
-            Ok(NonNull::new_unchecked(ptr))
-        }
-    }
-
-    /// Allocate a region of the kernel address space, but does not perform any mapping
-    /// or other operations.
-    fn allocate_unmapped_region(&mut self, num_pages: usize) -> KernResult<VirtRegion> {
-        let start = Page::from_base(self.kernel_heap_ptr).unwrap();
-
-        let end = Step::forward_checked(start, num_pages).ok_or(AllocError)?;
-        if self.kernel_heap_end < end.addr() {
-            return Err(AllocError.into());
-        }
-
-        self.kernel_heap_ptr = end.addr();
-        Ok(VirtRegion { start, end })
-    }
-}
-
 fn map_guard<P>(page: Page, page_table: &mut P) -> Result<(), PageTableError>
 where
     P: PageTable,
 {
-    unsafe { page_table.map_missing(page, 2, &frame_allocator::Global) }
+    unsafe {
+        page_table.map_missing(
+            page,
+            MissingPageFlags::GUARD_PAGE.bits(),
+            &frame_allocator::Global,
+        )
+    }
 }
 
 fn map_normal<P>(page: Page, page_table: &mut P) -> Result<(), PageTableError>
@@ -190,16 +124,53 @@ where
     Ok(())
 }
 
+fn map_lazy<P>(page: Page, page_table: &mut P) -> Result<(), PageTableError>
+where
+    P: PageTable,
+{
+    let bits = MissingPageFlags::DELAYED_COMMIT.bits();
+    unsafe { page_table.map_missing(page, bits, &frame_allocator::Global)? };
+    Ok(())
+}
+
+bitflags! {
+    struct MissingPageFlags: usize {
+        const DELAYED_COMMIT = 1 << 1;
+        const GUARD_PAGE = 1 << 2;
+    }
+}
+
 fn hhdm_start() -> *mut u8 {
     HHDM_REQUEST.get_response().get().unwrap().offset as usize as *mut u8
+}
+
+pub unsafe fn handle_page_fault(addr: VirtAddr) -> KernResult<()> {
+    let address_space = AddrSpace::Kernel;
+    let page = Page::containing(addr);
+
+    match address_space {
+        AddrSpace::Kernel => {
+            let mut kernel_addr_space = KERNEL_ADDRESS_SPACE.lock();
+            let page_table = kernel_addr_space.page_table();
+            handle_page_fault_with_page_table(page, page_table)
+        }
+        AddrSpace::User(_) => todo!("userspace allocation"),
+    }
+}
+
+unsafe fn handle_page_fault_with_page_table<P>(page: Page, page_table: &mut P) -> KernResult<()>
+where
+    P: PageTable,
+{
+    trace!("committing to page {:p}", page);
+    map_normal(page, page_table)?;
+    Ok(())
 }
 
 const PAGE_SIZE: usize = 4096;
 
 static HHDM_REQUEST: LimineHhdmRequest = LimineHhdmRequest::new(0);
 static MMAP_REQUEST: LimineMemmapRequest = LimineMemmapRequest::new(0);
-pub static KERNEL_ADDRESS_SPACE: Lazy<SpinMutex<KernelAddressSpace>> =
-    Lazy::new(|| unsafe { SpinMutex::new(make_kernel_addrspace()) });
 
 unsafe fn get_active_page_table() -> DirectlyMappedPageTable {
     let hhdm_response = HHDM_REQUEST
@@ -212,24 +183,44 @@ unsafe fn get_active_page_table() -> DirectlyMappedPageTable {
     DirectlyMappedPageTable::active(phys_base)
 }
 
-unsafe fn make_kernel_addrspace() -> KernelAddressSpace {
-    let page_table = get_active_page_table();
+static USERSPACE: Lazy<SpinMutex<UserAddressSpace>> = Lazy::new(|| {
+    let base = VirtAddr::from_usize(1 << 22);
+    let top = base.as_usize() + (1 << 26);
+    let top = VirtAddr::from_usize(top);
+    let region = VirtRegion {
+        end: Page::from_base(base).unwrap(),
+        start: Page::from_base(top).unwrap(),
+    };
 
-    let kernel_heap_start = hhdm_end();
-    let kernel_heap_end = VirtAddr::from_usize(usize::MAX);
-    let kernel_heap_ptr = kernel_heap_start;
+    SpinMutex::new(UserAddressSpace::new(region))
+});
 
-    let address_space_size = kernel_heap_end.as_usize() - kernel_heap_start.as_usize();
+pub fn allocate_user(size: usize) -> KernResult<NonNull<[u8]>> {
+    let pages = (size + PAGE_SIZE - 1) / PAGE_SIZE;
 
-    trace!(
-        "kernel address space is {}gb",
-        address_space_size / 1_000_000_000
-    );
+    let mut kern_address_space = KERNEL_ADDRESS_SPACE.lock();
+    let page_table = kern_address_space.page_table();
 
-    KernelAddressSpace {
-        kernel_heap_end,
-        kernel_heap_ptr,
-        kernel_heap_start,
-        page_table,
+    let region = USERSPACE.lock().allocate_stack(pages).unwrap();
+    let phys_alloc = &mut frame_allocator::Global;
+    for page in region {
+        let frame = phys_alloc.allocate_frame()?;
+
+        unsafe {
+            MapOptions::new(frame, page)
+                .execute()
+                .write()
+                .user_accessible()
+                .present()
+                .map(page_table, phys_alloc)
+                .unwrap();
+        }
     }
+
+    let start = region.start.addr().as_ptr();
+    let len = region.len();
+    trace!("len := {}", len);
+
+    let ptr = ptr::slice_from_raw_parts_mut(start, len);
+    Ok(NonNull::new(ptr).unwrap())
 }

@@ -17,10 +17,17 @@ linked_list_allocator = "0.10.5"
 lock_api = "0.4.9"
 log = { version = "0.4.17", default-features = false }
 meteor = { version = "0.1.0", path = "../meteor" }
-once_cell = { version = "1.17.1", default-features = false, features = [
-    "race",
-    "alloc",
+nanorand = { version = "0.7.0", default-features = false, features = [
+    "wyrand",
 ] }
+owo-colors = "3.5.0"
+pin-list = "0.1.0"
+rand_chacha = { version = "0.3.1", default-features = false }
+rand_core = { version = "0.6.4", default-features = false }
 spin = "0.9.5"
+tracing = { version = "0.1.37", default-features = false, features = [
+    "attributes",
+] }
 uart_16550 = "0.2.18"
+x2apic = "0.4.2"
 x86_64 = "0.14.10"

@@ -3,7 +3,7 @@ use core::num::NonZeroU8;
 use vm_types::VirtAddr;
 
 use self::private::Sealed;
-use super::reg::cs;
+use super::{reg::cs, tss::IstIndex};
 pub use crate::x86_common::interrupts::*;
 use crate::{read_volatile, write_volatile};
 
@@ -94,6 +94,10 @@ impl InterruptGate {
         self.options.set_present(true);
         self
     }
+
+    pub fn set_ist_index(&mut self, index: IstIndex) {
+        self.ist = Some(index.0);
+    }
 }
 
 pub trait X86_64StackFrameExt: Sealed {
@@ -105,6 +109,10 @@ pub trait X86_64StackFrameExt: Sealed {
     unsafe fn set_cs(&mut self, cs: usize);
     unsafe fn set_rflags(&mut self, rflags: usize);
     unsafe fn set_rsp(&mut self, rsp: VirtAddr);
+}
+
+pub trait X86IdtEntryExt {
+    fn set_ist_index(&mut self, index: IstIndex);
 }
 
 mod private {

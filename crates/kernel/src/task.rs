@@ -6,47 +6,83 @@ use log::trace;
 use spin::Once;
 
 pub use self::task_types::{Task, TaskId};
-use self::{naive_scheduler::NaiveScheduler, sched::Scheduler};
-use crate::error::KernResult;
+use self::{
+    naive_scheduler::NaiveScheduler, naive_smp_scheduler::NaiveSmpScheduler, sched::Scheduler,
+    work_stealing::WorkStealingScheduler,
+};
+use crate::error::{KernErrorKind, KernResult};
 
 mod idle;
 mod naive_scheduler;
+mod naive_smp_scheduler;
+mod process;
 mod sched;
 mod stack;
 mod task_types;
 mod thread;
+mod wait_list;
+mod work_stealing;
+
+#[derive(Debug)]
+pub struct SchedError;
 
 pub fn spawn<F, T>(f: F) -> KernResult<Task>
 where
     F: FnOnce() -> T + 'static + Send,
 {
-    thread::spawn(f).map(|t| t.0)
+    thread::spawn(f)
 }
 
 pub fn yield_now() {
-    scheduler().yield_now();
+    try_yield_now().unwrap();
 }
 
 pub fn park() {
-    trace!("scheduler.park: {:?}", current());
-    scheduler().park();
+    try_park().unwrap();
 }
 
+pub fn unpark(task: Task) {
+    try_unpark(task).unwrap()
+}
 pub fn current() -> Task {
-    scheduler().current()
+    try_current().unwrap()
 }
 
 pub fn exit() -> ! {
-    trace!("scheduler.exit: {:?}", current());
-    scheduler().exit();
+    try_exit().unwrap()
+}
+
+pub fn try_yield_now() -> KernResult<()> {
+    scheduler()?.yield_now()
+}
+
+pub fn try_park() -> KernResult<()> {
+    trace!("scheduler.park: {:?}", current());
+    scheduler()?.park()
+}
+
+pub fn try_current() -> KernResult<Task> {
+    scheduler()?.current()
+}
+
+pub fn try_exit() -> KernResult<!> {
+    scheduler()?.exit()
+}
+
+pub fn try_unpark(task: Task) -> KernResult<()> {
+    scheduler()?.unpark(task)
+}
+
+pub unsafe fn try_enter() -> KernResult<!> {
+    scheduler()?.enter()
 }
 
 pub unsafe fn enter() -> ! {
-    scheduler().enter();
+    try_enter().unwrap()
 }
 
-fn scheduler() -> &'static dyn Scheduler {
-    *SCHEDULER.get().expect("scheduler not initialized")
+fn scheduler() -> KernResult<&'static dyn Scheduler> {
+    Ok(*SCHEDULER.get().ok_or(KernErrorKind::Fault)?)
 }
 
 static SCHEDULER: Once<&'static dyn Scheduler> = Once::new();
@@ -76,8 +112,20 @@ unsafe fn task_switch(old: &Task, new: &Task) {
     context_switch(old, new);
 }
 
-pub fn naive() {
+pub fn init_naive_scheduler() {
     let s = Box::new(NaiveScheduler::new());
+    let s = Box::leak(s);
+    try_init_scheduler(s).unwrap();
+}
+
+pub fn init_smp_scheduler(cores: usize) {
+    let s = Box::new(WorkStealingScheduler::new(cores));
+    let s = Box::leak(s);
+    try_init_scheduler(s).unwrap();
+}
+
+pub fn init_naive_smp_scheduler(cores: usize) {
+    let s = Box::new(NaiveSmpScheduler::new(cores));
     let s = Box::leak(s);
     try_init_scheduler(s).unwrap();
 }

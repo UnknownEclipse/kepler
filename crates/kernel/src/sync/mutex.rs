@@ -4,8 +4,9 @@ use core::{
 };
 
 use lock_api::GuardSend;
+use log::trace;
 
-use super::futex::{wait, wake_one};
+use super::futex::{wait, wake_all, wake_one};
 
 pub type Mutex<T> = lock_api::Mutex<RawMutex, T>;
 pub type MutexGuard<'a, T> = lock_api::MutexGuard<'a, RawMutex, T>;
@@ -18,6 +19,7 @@ pub struct RawMutex {
 impl RawMutex {
     #[cold]
     fn lock_contended(&self) {
+        trace!("mutex.lock_contended()");
         let mut state = self.spin();
 
         if state == 0 {
@@ -41,6 +43,7 @@ impl RawMutex {
 
     #[cold]
     fn wake(&self) {
+        trace!("mutex.wake");
         wake_one(&self.state);
     }
 

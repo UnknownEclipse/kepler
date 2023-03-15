@@ -25,6 +25,34 @@ pub unsafe extern "C" fn context_switch(old: *mut *mut Context, new: *mut Contex
     );
 }
 
+extern "C" {
+    fn ring3_entry();
+}
+
+#[naked]
+pub unsafe extern "C" fn jump_ring3() {
+    asm!(
+        "
+        mov rcx, 0xc0000082
+        wrmsr
+        mov rcx, 0xc0000080
+        rdmsr
+        or eax, 1
+        wrmsr
+        mov rcx, 0xc0000081
+        rdmsr
+        mov edx, 0x00180008
+        wrmsr
+
+        mov ecx, ring3_entry
+        mov r11, 0x202
+        sysretq",
+        options(noreturn)
+    );
+}
+
+unsafe fn enable_syscall() {}
+
 #[naked]
 pub unsafe extern "C" fn context_switch_and_enable_interrupts(
     old: *mut *mut Context,

@@ -198,6 +198,11 @@ pub unsafe fn invlpg(addr: *const ()) {
     asm!("invlpg [{}]", in(reg) addr, options(nomem, nostack, preserves_flags));
 }
 
+#[inline]
+pub unsafe fn ltr(sel: u16) {
+    asm!("ltr {0:x}", in(reg) sel, options(nostack, preserves_flags));
+}
+
 #[repr(C, packed(2))]
 #[derive(Debug, Clone, Copy)]
 struct DescTablePtr {

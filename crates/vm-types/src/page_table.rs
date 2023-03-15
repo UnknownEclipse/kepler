@@ -15,6 +15,12 @@ impl From<FrameAllocError> for PageTableError {
     }
 }
 
+#[derive(Debug)]
+pub enum PageLookupError {
+    MissingPageTable(usize),
+    MissingPageEntry(usize),
+}
+
 /// A page table.
 ///
 /// # Safety
@@ -53,7 +59,7 @@ pub unsafe trait PageTable {
     //     P: ?Sized + FrameAllocator;
 
     /// Attempt to look up the frame that a given page is mapped to.
-    fn lookup(&mut self, page: Page) -> Option<Frame>;
+    fn lookup(&mut self, page: Page) -> Result<Frame, PageLookupError>;
 
     /// # Safety
     /// 1. This has the capacity to switch every address out from beneath the feet of any

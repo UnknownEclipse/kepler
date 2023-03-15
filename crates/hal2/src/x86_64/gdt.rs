@@ -1,10 +1,11 @@
-use core::mem;
+use core::{mem, num::NonZeroU16};
 
 use bitfrob::{u8_with_bit, u8_with_value};
 use vm_types::VirtAddr;
 
-use super::{instr::lgdt, Privilege};
+use super::{instr::lgdt, tss::Tss, Privilege};
 
+#[repr(C)]
 #[derive(Debug)]
 pub struct Gdt<const N: usize> {
     descriptors: [u64; N],
@@ -14,8 +15,8 @@ pub struct Gdt<const N: usize> {
 #[repr(C, packed(2))]
 #[derive(Debug, Clone, Copy)]
 pub struct GdtPtr {
-    limit: u16,
-    base: VirtAddr,
+    pub limit: u16,
+    pub base: VirtAddr,
 }
 
 impl<const N: usize> Gdt<N> {
@@ -27,7 +28,7 @@ impl<const N: usize> Gdt<N> {
     }
 
     pub fn push(&mut self, segment: Segment) -> Selector {
-        let sel = Selector(self.len);
+        let sel = Selector(NonZeroU16::new(self.len).unwrap());
         let buf = &mut self.descriptors;
         match segment {
             Segment::Code(s) => {
@@ -65,7 +66,7 @@ impl<const N: usize> Default for Gdt<N> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Selector(u16);
+pub struct Selector(pub NonZeroU16);
 
 #[derive(Debug, Clone, Copy)]
 pub enum Segment {
@@ -99,11 +100,11 @@ impl Segment {
         Self::Data(DataSegment::kernel64())
     }
 
-    pub fn tss64(tss: *const Tss64) -> Self {
+    pub fn tss64(tss: *const Tss) -> Self {
         let mut descriptor = Descriptor::zeroed();
         let addr = tss as usize;
         descriptor.set_base(addr as u32);
-        descriptor.set_limit(mem::size_of::<Tss64>() as u32);
+        descriptor.set_limit(mem::size_of::<Tss>() as u32);
         descriptor.access = 0b10001001;
 
         Self::System(SystemSegment {
@@ -113,16 +114,36 @@ impl Segment {
     }
 }
 
-#[repr(C, packed(4))]
-pub struct Tss64 {
-    _reserved1: u32,
-    pub rsp: [VirtAddr; 3],
-    _reserved2: [u32; 2],
-    pub ist: [VirtAddr; 7],
-    _reserved3: [u32; 2],
-    _reserved4: u16,
-    pub iopb: u16,
-}
+// #[repr(C, packed(4))]
+// pub struct Tss64 {
+//     _reserved1: u32,
+//     pub rsp: [VirtAddr; 3],
+//     _reserved2: [u32; 2],
+//     pub ist: [VirtAddr; 7],
+//     _reserved3: [u32; 2],
+//     _reserved4: u16,
+//     pub iopb: u16,
+// }
+
+// impl Tss64 {
+//     pub fn new() -> Self {
+//         Self {
+//             _reserved1: 0,
+//             rsp: [VirtAddr::zero(); 3],
+//             _reserved2: [0; 2],
+//             ist: [VirtAddr::zero(); 7],
+//             _reserved3: [0; 2],
+//             _reserved4: 0,
+//             iopb: mem::size_of::<Tss64>() as u16,
+//         }
+//     }
+// }
+
+// impl Default for Tss64 {
+//     fn default() -> Self {
+//         Self::new()
+//     }
+// }
 
 #[derive(Debug, Clone, Copy)]
 pub struct CodeSegment {

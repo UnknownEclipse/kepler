@@ -2,37 +2,30 @@ use alloc::{alloc::Global, boxed::Box};
 use core::{
     alloc::{AllocError, Allocator, Layout},
     cell::{Cell, SyncUnsafeCell},
-    mem::{self, ManuallyDrop, MaybeUninit},
+    mem::{ManuallyDrop, MaybeUninit},
     ptr::{self, addr_of_mut, NonNull},
     sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicUsize},
 };
 
-use hal::task::Context;
-use log::trace;
+use hal::{
+    interrupts::{self, enable},
+    task::Context,
+};
 
 use super::{
     current, exit,
     task_types::{allocate_id, AtomicState, Head, Policy, Task, TaskVTable},
 };
 use crate::{
-    error::KernResult,
+    error::{KernErrorKind, KernResult},
     memory::{self, AllocOptions},
 };
 
-pub fn spawn<F, T>(f: F) -> KernResult<Thread>
+pub fn spawn<F, T>(f: F) -> KernResult<Task>
 where
     F: FnOnce() -> T + 'static + Send,
 {
     Builder::new().spawn(f)
-}
-
-#[derive(Debug, Clone)]
-pub struct Thread(pub Task);
-
-impl Thread {
-    pub fn unpark(self) {
-        self.0.unpark();
-    }
 }
 
 #[derive(Debug)]
@@ -49,14 +42,14 @@ impl Builder {
         }
     }
 
-    pub fn spawn<F, T>(self, f: F) -> KernResult<Thread>
+    pub fn spawn<F, T>(self, f: F) -> KernResult<Task>
     where
         F: FnOnce() -> T + 'static + Send,
     {
         self.spawn_in(f, KAlloc)
     }
 
-    pub fn spawn_in<F, T, A>(self, f: F, allocator: A) -> KernResult<Thread>
+    pub fn spawn_in<F, T, A>(self, f: F, allocator: A) -> KernResult<Task>
     where
         A: Allocator + Clone,
         F: FnOnce() -> T + 'static + Send,
@@ -86,12 +79,16 @@ impl Default for Builder {
 //     }
 // }
 
-fn allocate_thread_in<F, T, A>(builder: Builder, f: F, allocator: A) -> KernResult<Thread>
+fn allocate_thread_in<F, T, A>(builder: Builder, f: F, allocator: A) -> KernResult<Task>
 where
     A: Allocator + Clone,
     F: FnOnce() -> T + 'static + Send,
 {
-    let mut stack = Box::new_uninit_slice_in(builder.stack_size, allocator.clone());
+    let layout =
+        Layout::from_size_align(builder.stack_size, 4096).map_err(|_| KernErrorKind::Fault)?;
+
+    let stack = allocator.allocate(layout)?;
+    let mut stack = unsafe { Box::from_raw_in(stack.as_ptr() as *mut _, allocator.clone()) };
 
     let sp = init_stack(entry::<F, T, A>, &mut stack);
     let allocation = Box::new_uninit_in(allocator);
@@ -118,7 +115,7 @@ where
     unsafe {
         ptr::write(ptr, MaybeUninit::new(inner));
         let raw = NonNull::new(ptr.cast()).unwrap();
-        Ok(Thread(Task::from_raw(raw)))
+        Ok(Task::from_raw(raw))
     }
 }
 
@@ -127,10 +124,15 @@ where
     A: Allocator + Clone,
     F: FnOnce() -> T + 'static + Send,
 {
-    let task = current();
-    let ptr: NonNull<ThreadInner<F, T, A>> = task.0.cast();
-    let f = unsafe { ptr.as_ref().func.take().unwrap_unchecked() };
-    mem::drop(task);
+    let f = unsafe {
+        let were_enabled = interrupts::are_enabled();
+        assert!(!were_enabled);
+        enable();
+
+        let task = current();
+        let ptr: NonNull<ThreadInner<F, T, A>> = task.0.cast();
+        ptr.as_ref().func.take().unwrap_unchecked()
+    };
     f();
     exit();
 }
@@ -159,15 +161,6 @@ where
     stack: SyncUnsafeCell<Box<[MaybeUninit<u8>], A>>,
     func: Cell<Option<F>>,
     allocator: ManuallyDrop<A>,
-}
-
-impl<F, T, A> Drop for ThreadInner<F, T, A>
-where
-    A: Allocator,
-{
-    fn drop(&mut self) {
-        trace!("thread drop");
-    }
 }
 
 impl<F, T, A> ThreadInner<F, T, A>
